@@ -13,7 +13,6 @@ import (
 	"github.com/thrasher-/gocryptotrader/common"
 	"github.com/thrasher-/gocryptotrader/config"
 	"github.com/thrasher-/gocryptotrader/currency"
-	"github.com/thrasher-/gocryptotrader/exchanges/nonce"
 	"github.com/thrasher-/gocryptotrader/exchanges/orderbook"
 	"github.com/thrasher-/gocryptotrader/exchanges/request"
 	"github.com/thrasher-/gocryptotrader/exchanges/ticker"
@@ -182,6 +181,9 @@ const (
 	NoFiatWithdrawalsText                   string = "NO FIAT WITHDRAWAL"
 
 	UnknownWithdrawalTypeText string = "UNKNOWN"
+
+	RestAuthentication      uint8 = 0
+	WebsocketAuthentication uint8 = 1
 )
 
 // AccountInfo is a Generic type to hold each exchange's holdings in
@@ -259,10 +261,10 @@ type Base struct {
 	Verbose                                    bool
 	RESTPollingDelay                           time.Duration
 	AuthenticatedAPISupport                    bool
+	AuthenticatedWebsocketAPISupport           bool
 	APIWithdrawPermissions                     uint32
 	APIAuthPEMKeySupport                       bool
 	APISecret, APIKey, APIAuthPEMKey, ClientID string
-	Nonce                                      nonce.Nonce
 	TakerFee, MakerFee, Fee                    float64
 	BaseCurrencies                             currency.Currencies
 	AvailablePairs                             currency.Pairs
@@ -273,6 +275,7 @@ type Base struct {
 	SupportsRESTTickerBatching                 bool
 	HTTPTimeout                                time.Duration
 	HTTPUserAgent                              string
+	HTTPDebugging                              bool
 	WebsocketURL                               string
 	APIUrl                                     string
 	APIUrlDefault                              string
@@ -301,7 +304,7 @@ type IBotExchange interface {
 	GetAvailableCurrencies() currency.Pairs
 	GetAssetTypes() []string
 	GetAccountInfo() (AccountInfo, error)
-	GetAuthenticatedAPISupport() bool
+	GetAuthenticatedAPISupport(endpoint uint8) bool
 	SetCurrencies(pairs []currency.Pair, enabledPairs bool) error
 	GetExchangeHistory(p currency.Pair, assetType string) ([]TradeHistory, error)
 	SupportsAutoPairUpdates() bool
@@ -324,6 +327,10 @@ type IBotExchange interface {
 	WithdrawFiatFunds(withdrawRequest *WithdrawRequest) (string, error)
 	WithdrawFiatFundsToInternationalBank(withdrawRequest *WithdrawRequest) (string, error)
 	GetWebsocket() (*Websocket, error)
+	SubscribeToWebsocketChannels(channels []WebsocketChannelSubscription) error
+	UnsubscribeToWebsocketChannels(channels []WebsocketChannelSubscription) error
+	AuthenticateWebsocket() error
+	GetSubscriptions() ([]WebsocketChannelSubscription, error)
 }
 
 // SupportsRESTTickerBatchUpdates returns whether or not the
@@ -572,8 +579,14 @@ func (e *Base) SetCurrencyPairFormat() error {
 
 // GetAuthenticatedAPISupport returns whether the exchange supports
 // authenticated API requests
-func (e *Base) GetAuthenticatedAPISupport() bool {
-	return e.AuthenticatedAPISupport
+func (e *Base) GetAuthenticatedAPISupport(endpoint uint8) bool {
+	switch endpoint {
+	case RestAuthentication:
+		return e.AuthenticatedAPISupport
+	case WebsocketAuthentication:
+		return e.AuthenticatedWebsocketAPISupport
+	}
+	return false
 }
 
 // GetName is a method that returns the name of the exchange base
@@ -671,17 +684,16 @@ func (e *Base) IsEnabled() bool {
 
 // SetAPIKeys is a method that sets the current API keys for the exchange
 func (e *Base) SetAPIKeys(apiKey, apiSecret, clientID string, b64Decode bool) {
-	if !e.AuthenticatedAPISupport {
+	if !e.AuthenticatedAPISupport && !e.AuthenticatedWebsocketAPISupport {
 		return
 	}
-
 	e.APIKey = apiKey
 	e.ClientID = clientID
-
 	if b64Decode {
 		result, err := common.Base64Decode(apiSecret)
 		if err != nil {
 			e.AuthenticatedAPISupport = false
+			e.AuthenticatedWebsocketAPISupport = false
 			log.Warnf(warningBase64DecryptSecretKeyFailed, e.Name)
 		}
 		e.APISecret = string(result)
@@ -898,7 +910,7 @@ func (e *Base) SupportsWithdrawPermissions(permissions uint32) bool {
 
 // FormatWithdrawPermissions will return each of the exchange's compatible withdrawal methods in readable form
 func (e *Base) FormatWithdrawPermissions() string {
-	services := []string{}
+	var services []string
 	for i := 0; i < 32; i++ {
 		var check uint32 = 1 << uint32(i)
 		if e.GetWithdrawPermissions()&check != 0 {

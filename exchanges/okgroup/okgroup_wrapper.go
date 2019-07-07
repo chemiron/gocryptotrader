@@ -264,13 +264,15 @@ func (o *OKGroup) CancelOrder(orderCancellation *exchange.OrderCancellation) (er
 }
 
 // CancelAllOrders cancels all orders associated with a currency pair
-func (o *OKGroup) CancelAllOrders(orderCancellation *exchange.OrderCancellation) (resp exchange.CancelAllOrdersResponse, _ error) {
+func (o *OKGroup) CancelAllOrders(orderCancellation *exchange.OrderCancellation) (resp exchange.CancelAllOrdersResponse, err error) {
 	orderIDs := strings.Split(orderCancellation.OrderID, ",")
+	resp.OrderStatus = make(map[string]string)
 	var orderIDNumbers []int64
 	for _, i := range orderIDs {
-		orderIDNumber, err := strconv.ParseInt(i, 10, 64)
-		if err != nil {
-			return resp, err
+		orderIDNumber, strConvErr := strconv.ParseInt(i, 10, 64)
+		if strConvErr != nil {
+			resp.OrderStatus[i] = strConvErr.Error()
+			continue
 		}
 		orderIDNumbers = append(orderIDNumbers, orderIDNumber)
 	}
@@ -428,4 +430,28 @@ func (o *OKGroup) GetFeeByType(feeBuilder *exchange.FeeBuilder) (float64, error)
 // GetWithdrawCapabilities returns the types of withdrawal methods permitted by the exchange
 func (o *OKGroup) GetWithdrawCapabilities() uint32 {
 	return o.GetWithdrawPermissions()
+}
+
+// SubscribeToWebsocketChannels appends to ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle subscribing
+func (o *OKGroup) SubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	o.Websocket.SubscribeToChannels(channels)
+	return nil
+}
+
+// UnsubscribeToWebsocketChannels removes from ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle unsubscribing
+func (o *OKGroup) UnsubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	o.Websocket.UnsubscribeToChannels(channels)
+	return nil
+}
+
+// GetSubscriptions returns a copied list of subscriptions
+func (o *OKGroup) GetSubscriptions() ([]exchange.WebsocketChannelSubscription, error) {
+	return o.Websocket.GetSubscriptions(), nil
+}
+
+// AuthenticateWebsocket sends an authentication message to the websocket
+func (o *OKGroup) AuthenticateWebsocket() error {
+	return o.WsLogin()
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/thrasher-/gocryptotrader/config"
 	"github.com/thrasher-/gocryptotrader/currency"
 	exchange "github.com/thrasher-/gocryptotrader/exchanges"
+	"github.com/thrasher-/gocryptotrader/exchanges/sharedtestvalues"
 )
 
 var k Kraken
@@ -651,15 +652,12 @@ func TestOrderbookBufferReset(t *testing.T) {
 	if !k.Websocket.IsEnabled() {
 		t.Skip("Websocket not enabled, skipping")
 	}
-	if k.WebsocketConn == nil {
-		k.Websocket.Connect()
-	}
 	var obUpdates []string
 	obpartial := `[0,{"as":[["5541.30000","2.50700000","0"]],"bs":[["5541.20000","1.52900000","0"]]}]`
 	for i := 1; i < orderbookBufferLimit+2; i++ {
 		obUpdates = append(obUpdates, fmt.Sprintf(`[0,{"a":[["5541.30000","2.50700000","%v"]],"b":[["5541.30000","1.00000000","%v"]]}]`, i, i))
 	}
-	k.Websocket.DataHandler = make(chan interface{}, 10)
+	k.Websocket.DataHandler = sharedtestvalues.GetWebsocketInterfaceChannelOverride()
 	var dataResponse WebsocketDataResponse
 	err := common.JSONDecode([]byte(obpartial), &dataResponse)
 	if err != nil {
@@ -704,14 +702,11 @@ func TestOrderBookOutOfOrder(t *testing.T) {
 	if !k.Websocket.IsEnabled() {
 		t.Skip("Websocket not enabled, skipping")
 	}
-	if k.WebsocketConn == nil {
-		k.Websocket.Connect()
-	}
 	obpartial := `[0,{"as":[["5541.30000","2.50700000","0"]],"bs":[["5541.20000","1.52900000","5"]]}]`
 	obupdate1 := `[0,{"a":[["5541.30000","0.00000000","1"]],"b":[["5541.30000","0.00000000","3"]]}]`
 	obupdate2 := `[0,{"a":[["5541.30000","2.50700000","2"]],"b":[["5541.30000","0.00000000","1"]]}]`
 
-	k.Websocket.DataHandler = make(chan interface{}, 10)
+	k.Websocket.DataHandler = sharedtestvalues.GetWebsocketInterfaceChannelOverride()
 	var dataResponse WebsocketDataResponse
 	err := common.JSONDecode([]byte(obpartial), &dataResponse)
 	if err != nil {
@@ -746,169 +741,5 @@ func TestOrderBookOutOfOrder(t *testing.T) {
 	err = k.wsProcessOrderBookUpdate(&channelData)
 	if !strings.Contains(err.Error(), "orderbook update out of order") {
 		t.Error("Expected out of order orderbook error")
-	}
-}
-
-// TestSubscribeToChannel websocket test
-func TestSubscribeToChannel(t *testing.T) {
-	if k.Name == "" {
-		k.SetDefaults()
-		TestSetup(t)
-	}
-	if !k.Websocket.IsEnabled() {
-		t.Skip("Websocket not enabled, skipping")
-	}
-	if k.WebsocketConn == nil {
-		k.Websocket.Connect()
-	}
-
-	err := k.WsSubscribeToChannel("ticker", []string{"XTZ/USD"}, 1)
-	if err != nil {
-		t.Error(err)
-	}
-}
-
-// TestSubscribeToNonExistentChannel websocket test
-func TestSubscribeToNonExistentChannel(t *testing.T) {
-	if k.Name == "" {
-		k.SetDefaults()
-		TestSetup(t)
-	}
-	if !k.Websocket.IsEnabled() {
-		t.Skip("Websocket not enabled, skipping")
-	}
-	if k.WebsocketConn == nil {
-		k.Websocket.Connect()
-	}
-	err := k.WsSubscribeToChannel("ticker", []string{"pewdiepie"}, 1)
-	if err != nil {
-		t.Error(err)
-	}
-	subscriptionError := false
-	for i := 0; i < 7; i++ {
-		response := <-k.Websocket.DataHandler
-		if err, ok := response.(error); ok && err != nil {
-			subscriptionError = true
-			break
-		}
-	}
-	if !subscriptionError {
-		t.Error("Expected error")
-	}
-}
-
-// TestSubscribeUnsubscribeToChannel websocket test
-func TestSubscribeUnsubscribeToChannel(t *testing.T) {
-	if k.Name == "" {
-		k.SetDefaults()
-		TestSetup(t)
-	}
-	if !k.Websocket.IsEnabled() {
-		t.Skip("Websocket not enabled, skipping")
-	}
-	if k.WebsocketConn == nil {
-		k.Websocket.Connect()
-	}
-	err := k.WsSubscribeToChannel("ticker", []string{"XRP/JPY"}, 1)
-	if err != nil {
-		t.Error(err)
-	}
-	err = k.WsUnsubscribeToChannel("ticker", []string{"XRP/JPY"}, 2)
-	if err != nil {
-		t.Error(err)
-	}
-}
-
-// TestUnsubscribeWithoutSubscription websocket test
-func TestUnsubscribeWithoutSubscription(t *testing.T) {
-	if k.Name == "" {
-		k.SetDefaults()
-		TestSetup(t)
-	}
-	if !k.Websocket.IsEnabled() {
-		t.Skip("Websocket not enabled, skipping")
-	}
-	if k.WebsocketConn == nil {
-		k.Websocket.Connect()
-	}
-	err := k.WsUnsubscribeToChannel("ticker", []string{"QTUM/EUR"}, 3)
-	if err != nil {
-		t.Error(err)
-	}
-	unsubscriptionError := false
-	for i := 0; i < 5; i++ {
-		response := <-k.Websocket.DataHandler
-		t.Log(response)
-		if err, ok := response.(error); ok && err != nil {
-			if err.Error() == "requestID: '3'. Error: Subscription Not Found" {
-				unsubscriptionError = true
-				break
-			}
-		}
-	}
-	if !unsubscriptionError {
-		t.Error("Expected error")
-	}
-}
-
-// TestUnsubscribeWithChannelID websocket test
-func TestUnsubscribeWithChannelID(t *testing.T) {
-	if k.Name == "" {
-		k.SetDefaults()
-		TestSetup(t)
-	}
-	if !k.Websocket.IsEnabled() {
-		t.Skip("Websocket not enabled, skipping")
-	}
-	if k.WebsocketConn == nil {
-		k.Websocket.Connect()
-	}
-	err := k.WsUnsubscribeToChannelByChannelID(100)
-	if err != nil {
-		t.Error(err)
-	}
-	unsubscriptionError := false
-	for i := 0; i < 5; i++ {
-		response := <-k.Websocket.DataHandler
-		if err, ok := response.(error); ok && err != nil {
-			if err.Error() == "Not subscribed to the requested channelID" {
-				unsubscriptionError = true
-				break
-			}
-		}
-	}
-	if !unsubscriptionError {
-		t.Error("Expected error")
-	}
-}
-
-// TestUnsubscribeFromNonExistentChannel websocket test
-func TestUnsubscribeFromNonExistentChannel(t *testing.T) {
-	if k.Name == "" {
-		k.SetDefaults()
-		TestSetup(t)
-	}
-	if !k.Websocket.IsEnabled() {
-		t.Skip("Websocket not enabled, skipping")
-	}
-	if k.WebsocketConn == nil {
-		k.Websocket.Connect()
-	}
-	err := k.WsUnsubscribeToChannel("ticker", []string{"tseries"}, 0)
-	if err != nil {
-		t.Error(err)
-	}
-	unsubscriptionError := false
-	for i := 0; i < 5; i++ {
-		response := <-k.Websocket.DataHandler
-		if err, ok := response.(error); ok && err != nil {
-			if err.Error() == "Currency pair not in ISO 4217-A3 format tseries" {
-				unsubscriptionError = true
-				break
-			}
-		}
-	}
-	if !unsubscriptionError {
-		t.Error("Expected error")
 	}
 }

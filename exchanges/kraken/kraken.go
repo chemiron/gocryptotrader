@@ -60,7 +60,7 @@ type Kraken struct {
 	exchange.Base
 	WebsocketConn      *websocket.Conn
 	CryptoFee, FiatFee float64
-	mu                 sync.Mutex
+	wsRequestMtx       sync.Mutex
 }
 
 // SetDefaults sets current default settings
@@ -94,7 +94,9 @@ func (k *Kraken) SetDefaults() {
 	k.Websocket.Functionality = exchange.WebsocketTickerSupported |
 		exchange.WebsocketTradeDataSupported |
 		exchange.WebsocketKlineSupported |
-		exchange.WebsocketOrderbookSupported
+		exchange.WebsocketOrderbookSupported |
+		exchange.WebsocketSubscribeSupported |
+		exchange.WebsocketUnsubscribeSupported
 
 }
 
@@ -110,6 +112,7 @@ func (k *Kraken) Setup(exch *config.ExchangeConfig) {
 		k.SetHTTPClientUserAgent(exch.HTTPUserAgent)
 		k.RESTPollingDelay = exch.RESTPollingDelay
 		k.Verbose = exch.Verbose
+		k.HTTPDebugging = exch.HTTPDebugging
 		k.Websocket.SetWsStatusAndConnection(exch.Websocket)
 		k.BaseCurrencies = exch.BaseCurrencies
 		k.AvailablePairs = exch.AvailablePairs
@@ -135,8 +138,11 @@ func (k *Kraken) Setup(exch *config.ExchangeConfig) {
 			log.Fatal(err)
 		}
 		err = k.WebsocketSetup(k.WsConnect,
+			k.Subscribe,
+			k.Unsubscribe,
 			exch.Name,
 			exch.Websocket,
+			exch.Verbose,
 			krakenWSURL,
 			exch.WebsocketURL)
 		if err != nil {
@@ -926,7 +932,7 @@ func GetError(apiErrors []string) error {
 
 // SendHTTPRequest sends an unauthenticated HTTP requests
 func (k *Kraken) SendHTTPRequest(path string, result interface{}) error {
-	return k.SendPayload(http.MethodGet, path, nil, nil, result, false, k.Verbose)
+	return k.SendPayload(http.MethodGet, path, nil, nil, result, false, false, k.Verbose, k.HTTPDebugging)
 }
 
 // SendAuthenticatedHTTPRequest sends an authenticated HTTP request
@@ -937,13 +943,9 @@ func (k *Kraken) SendAuthenticatedHTTPRequest(method string, params url.Values, 
 	}
 
 	path := fmt.Sprintf("/%s/private/%s", krakenAPIVersion, method)
-	if k.Nonce.Get() == 0 {
-		k.Nonce.Set(time.Now().UnixNano())
-	} else {
-		k.Nonce.Inc()
-	}
 
-	params.Set("nonce", k.Nonce.String())
+	n := k.Requester.GetNonce(true).String()
+	params.Set("nonce", n)
 
 	secret, err := common.Base64Decode(k.APISecret)
 	if err != nil {
@@ -972,7 +974,9 @@ func (k *Kraken) SendAuthenticatedHTTPRequest(method string, params url.Values, 
 		strings.NewReader(encoded),
 		result,
 		true,
-		k.Verbose)
+		true,
+		k.Verbose,
+		k.HTTPDebugging)
 }
 
 // GetFee returns an estimate of fee based on type of transaction

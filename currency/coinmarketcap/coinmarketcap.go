@@ -730,7 +730,9 @@ func (c *Coinmarketcap) SendHTTPRequest(method, endpoint string, v url.Values, r
 		strings.NewReader(""),
 		result,
 		false,
-		c.Verbose)
+		false,
+		c.Verbose,
+		false)
 }
 
 // CheckAccountPlan checks your current account plan to the minimal account

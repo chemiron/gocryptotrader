@@ -229,11 +229,7 @@ func (b *BTCMarkets) CancelAllOrders(_ *exchange.OrderCancellation) (exchange.Ca
 
 	var orderList []int64
 	for i := range openOrders {
-		orderIDInt, err := strconv.ParseInt(openOrders[i].ID, 10, 64)
-		if err != nil {
-			cancelAllOrdersResponse.OrderStatus[openOrders[i].ID] = err.Error()
-		}
-		orderList = append(orderList, orderIDInt)
+		orderList = append(orderList, openOrders[i].ID)
 	}
 
 	if len(orderList) > 0 {
@@ -243,8 +239,8 @@ func (b *BTCMarkets) CancelAllOrders(_ *exchange.OrderCancellation) (exchange.Ca
 		}
 
 		for i := range orders {
-			if err != nil {
-				cancelAllOrdersResponse.OrderStatus[strconv.FormatInt(orders[i].ID, 10)] = err.Error()
+			if !orders[i].Success {
+				cancelAllOrdersResponse.OrderStatus[strconv.FormatInt(orders[i].ID, 10)] = orders[i].ErrorMessage
 			}
 		}
 	}
@@ -286,7 +282,7 @@ func (b *BTCMarkets) GetOrderInfo(orderID string) (exchange.OrderDetail, error) 
 		OrderDetail.Amount = orders[i].Volume
 		OrderDetail.OrderDate = orderDate
 		OrderDetail.Exchange = b.GetName()
-		OrderDetail.ID = orders[i].ID
+		OrderDetail.ID = strconv.FormatInt(orders[i].ID, 10)
 		OrderDetail.RemainingAmount = orders[i].OpenVolume
 		OrderDetail.OrderSide = side
 		OrderDetail.OrderType = orderType
@@ -358,7 +354,7 @@ func (b *BTCMarkets) GetActiveOrders(getOrdersRequest *exchange.GetOrdersRequest
 		orderType := exchange.OrderType(strings.ToUpper(resp[i].OrderType))
 
 		openOrder := exchange.OrderDetail{
-			ID:              resp[i].ID,
+			ID:              strconv.FormatInt(resp[i].ID, 10),
 			Amount:          resp[i].Volume,
 			Exchange:        b.Name,
 			RemainingAmount: resp[i].OpenVolume,
@@ -428,7 +424,7 @@ func (b *BTCMarkets) GetOrderHistory(getOrdersRequest *exchange.GetOrdersRequest
 		orderType := exchange.OrderType(strings.ToUpper(respOrders[i].OrderType))
 
 		openOrder := exchange.OrderDetail{
-			ID:              respOrders[i].ID,
+			ID:              strconv.FormatInt(respOrders[i].ID, 10),
 			Amount:          respOrders[i].Volume,
 			Exchange:        b.Name,
 			RemainingAmount: respOrders[i].OpenVolume,
@@ -463,4 +459,26 @@ func (b *BTCMarkets) GetOrderHistory(getOrdersRequest *exchange.GetOrdersRequest
 	exchange.FilterOrdersBySide(&orders, getOrdersRequest.OrderSide)
 
 	return orders, nil
+}
+
+// SubscribeToWebsocketChannels appends to ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle subscribing
+func (b *BTCMarkets) SubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	return common.ErrFunctionNotSupported
+}
+
+// UnsubscribeToWebsocketChannels removes from ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle unsubscribing
+func (b *BTCMarkets) UnsubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	return common.ErrFunctionNotSupported
+}
+
+// GetSubscriptions returns a copied list of subscriptions
+func (b *BTCMarkets) GetSubscriptions() ([]exchange.WebsocketChannelSubscription, error) {
+	return nil, common.ErrFunctionNotSupported
+}
+
+// AuthenticateWebsocket sends an authentication message to the websocket
+func (b *BTCMarkets) AuthenticateWebsocket() error {
+	return common.ErrFunctionNotSupported
 }

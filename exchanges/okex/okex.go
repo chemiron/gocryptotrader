@@ -3,6 +3,7 @@ package okex
 import (
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/thrasher-/gocryptotrader/common"
@@ -78,7 +79,10 @@ func (o *OKEX) SetDefaults() {
 	o.Websocket.Functionality = exchange.WebsocketTickerSupported |
 		exchange.WebsocketTradeDataSupported |
 		exchange.WebsocketKlineSupported |
-		exchange.WebsocketOrderbookSupported
+		exchange.WebsocketOrderbookSupported |
+		exchange.WebsocketSubscribeSupported |
+		exchange.WebsocketUnsubscribeSupported |
+		exchange.WebsocketAuthenticatedEndpointsSupported
 }
 
 // GetFuturesPostions Get the information of all holding positions in futures trading.
@@ -176,9 +180,66 @@ func (o *OKEX) GetFuturesContractInformation() (resp []okgroup.GetFuturesContrac
 }
 
 // GetFuturesOrderBook List all contracts. This request does not support pagination. The full list will be returned for a request.
-func (o *OKEX) GetFuturesOrderBook(request okgroup.GetFuturesOrderBookRequest) (resp okgroup.GetFuturesOrderBookResponse, _ error) {
+func (o *OKEX) GetFuturesOrderBook(request okgroup.GetFuturesOrderBookRequest) (resp okgroup.GetFuturesOrderBookResponse, err error) {
 	requestURL := fmt.Sprintf("%v/%v/%v%v", okgroup.OKGroupInstruments, request.InstrumentID, okgroup.OKGroupGetSpotOrderBook, okgroup.FormatParameters(request))
-	return resp, o.SendHTTPRequest(http.MethodGet, okGroupFuturesSubsection, requestURL, nil, &resp, true)
+
+	type tempOB struct {
+		Bids      [][]string `json:"bids"`
+		Asks      [][]string `json:"asks"`
+		Timestamp time.Time  `json:"timestamp"`
+	}
+
+	var tmpOB tempOB
+	err = o.SendHTTPRequest(http.MethodGet, okGroupFuturesSubsection, requestURL, nil, &tmpOB, true)
+	if err != nil {
+		return resp, err
+	}
+
+	processOB := func(ob [][]string) ([]okgroup.FuturesOrderbookItem, error) {
+		var processedOB []okgroup.FuturesOrderbookItem
+		for x := range ob {
+			price, convErr := strconv.ParseFloat(ob[x][0], 64)
+			if err != nil {
+				return nil, convErr
+			}
+
+			size, convErr := strconv.ParseInt(ob[x][1], 10, 64)
+			if err != nil {
+				return nil, convErr
+			}
+
+			liqOrders, convErr := strconv.ParseInt(ob[x][2], 10, 64)
+			if err != nil {
+				return nil, convErr
+			}
+
+			numOrders, convErr := strconv.ParseInt(ob[x][3], 10, 64)
+			if err != nil {
+				return nil, convErr
+			}
+
+			processedOB = append(processedOB, okgroup.FuturesOrderbookItem{
+				Price:                 price,
+				Size:                  size,
+				ForceLiquidatedOrders: liqOrders,
+				NumberOrders:          numOrders,
+			})
+		}
+		return processedOB, nil
+	}
+
+	resp.Bids, err = processOB(tmpOB.Bids)
+	if err != nil {
+		return
+	}
+
+	resp.Asks, err = processOB(tmpOB.Asks)
+	if err != nil {
+		return
+	}
+
+	resp.Timestamp = tmpOB.Timestamp
+	return resp, nil
 }
 
 // GetAllFuturesTokenInfo Get the last traded price, best bid/ask price, 24 hour trading volume and more info of all contracts.
@@ -194,7 +255,7 @@ func (o *OKEX) GetFuturesTokenInfoForCurrency(instrumentID string) (resp okgroup
 }
 
 // GetFuturesFilledOrder Get the recent 300 transactions of all contracts. Pagination is not supported here.
-// The whole book will be returned for one request. WebSocket is recommended here.
+// The whole book will be returned for one request. Websocket is recommended here.
 func (o *OKEX) GetFuturesFilledOrder(request okgroup.GetFuturesFilledOrderRequest) (resp []okgroup.GetFuturesFilledOrdersResponse, _ error) {
 	requestURL := fmt.Sprintf("%v/%v/%v%v", okgroup.OKGroupInstruments, request.InstrumentID, okgroup.OKGroupTrades, okgroup.FormatParameters(request))
 	return resp, o.SendHTTPRequest(http.MethodGet, okGroupFuturesSubsection, requestURL, nil, &resp, true)

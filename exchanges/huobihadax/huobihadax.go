@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -61,8 +62,10 @@ const (
 
 // HUOBIHADAX is the overarching type across this package
 type HUOBIHADAX struct {
-	WebsocketConn *websocket.Conn
+	WebsocketConn              *websocket.Conn
+	AuthenticatedWebsocketConn *websocket.Conn
 	exchange.Base
+	wsRequestMtx sync.Mutex
 }
 
 // SetDefaults sets default values for the exchange
@@ -90,7 +93,11 @@ func (h *HUOBIHADAX) SetDefaults() {
 	h.WebsocketInit()
 	h.Websocket.Functionality = exchange.WebsocketKlineSupported |
 		exchange.WebsocketTradeDataSupported |
-		exchange.WebsocketOrderbookSupported
+		exchange.WebsocketOrderbookSupported |
+		exchange.WebsocketSubscribeSupported |
+		exchange.WebsocketUnsubscribeSupported |
+		exchange.WebsocketAuthenticatedEndpointsSupported |
+		exchange.WebsocketAccountDataSupported
 }
 
 // Setup sets user configuration
@@ -100,6 +107,7 @@ func (h *HUOBIHADAX) Setup(exch *config.ExchangeConfig) {
 	} else {
 		h.Enabled = true
 		h.AuthenticatedAPISupport = exch.AuthenticatedAPISupport
+		h.AuthenticatedWebsocketAPISupport = exch.AuthenticatedWebsocketAPISupport
 		h.SetAPIKeys(exch.APIKey, exch.APISecret, "", false)
 		h.APIAuthPEMKeySupport = exch.APIAuthPEMKeySupport
 		h.APIAuthPEMKey = exch.APIAuthPEMKey
@@ -107,6 +115,7 @@ func (h *HUOBIHADAX) Setup(exch *config.ExchangeConfig) {
 		h.SetHTTPClientUserAgent(exch.HTTPUserAgent)
 		h.RESTPollingDelay = exch.RESTPollingDelay
 		h.Verbose = exch.Verbose
+		h.HTTPDebugging = exch.HTTPDebugging
 		h.BaseCurrencies = exch.BaseCurrencies
 		h.AvailablePairs = exch.AvailablePairs
 		h.EnabledPairs = exch.EnabledPairs
@@ -131,9 +140,12 @@ func (h *HUOBIHADAX) Setup(exch *config.ExchangeConfig) {
 			log.Fatal(err)
 		}
 		err = h.WebsocketSetup(h.WsConnect,
+			h.Subscribe,
+			h.Unsubscribe,
 			exch.Name,
 			exch.Websocket,
-			huobiGlobalWebsocketEndpoint,
+			exch.Verbose,
+			HuobiHadaxSocketIOAddress,
 			exch.WebsocketURL)
 		if err != nil {
 			log.Fatal(err)
@@ -826,7 +838,7 @@ func (h *HUOBIHADAX) CancelWithdraw(withdrawID int64) (int64, error) {
 
 // SendHTTPRequest sends an unauthenticated HTTP request
 func (h *HUOBIHADAX) SendHTTPRequest(path string, result interface{}) error {
-	return h.SendPayload(http.MethodGet, path, nil, nil, result, false, h.Verbose)
+	return h.SendPayload(http.MethodGet, path, nil, nil, result, false, false, h.Verbose, h.HTTPDebugging)
 }
 
 // SendAuthenticatedHTTPPostRequest sends authenticated requests to the HUOBI API
@@ -853,7 +865,7 @@ func (h *HUOBIHADAX) SendAuthenticatedHTTPPostRequest(method, endpoint, postBody
 	signatureParams.Set("Signature", common.Base64Encode(hmac))
 	urlPath := common.EncodeURLValues(fmt.Sprintf("%s%s", h.APIUrl, endpoint),
 		signatureParams)
-	return h.SendPayload(method, urlPath, headers, bytes.NewBufferString(postBodyValues), result, true, h.Verbose)
+	return h.SendPayload(method, urlPath, headers, bytes.NewBufferString(postBodyValues), result, true, false, h.Verbose, h.HTTPDebugging)
 }
 
 // SendAuthenticatedHTTPRequest sends authenticated requests to the HUOBI API
@@ -879,7 +891,7 @@ func (h *HUOBIHADAX) SendAuthenticatedHTTPRequest(method, endpoint string, value
 
 	urlPath := common.EncodeURLValues(fmt.Sprintf("%s%s", h.APIUrl, endpoint),
 		values)
-	return h.SendPayload(method, urlPath, headers, bytes.NewBufferString(""), result, true, h.Verbose)
+	return h.SendPayload(method, urlPath, headers, bytes.NewBufferString(""), result, true, false, h.Verbose, h.HTTPDebugging)
 }
 
 // GetFee returns an estimate of fee based on type of transaction

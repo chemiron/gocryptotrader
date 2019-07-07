@@ -157,3 +157,47 @@ const (
 	internationalWithdrawal string = "international"
 	errStr                  string = "error"
 )
+
+type websocketEventRequest struct {
+	Event string        `json:"event"`
+	Data  websocketData `json:"data"`
+}
+
+type websocketData struct {
+	Channel string `json:"channel"`
+}
+
+type websocketResponse struct {
+	Event   string `json:"event"`
+	Channel string `json:"channel"`
+}
+
+type websocketTradeResponse struct {
+	websocketResponse
+	Data websocketTradeData `json:"data"`
+}
+
+type websocketTradeData struct {
+	Microtimestamp string  `json:"microtimestamp"`
+	Amount         float64 `json:"amount"`
+	BuyOrderID     int64   `json:"buy_order_id"`
+	SellOrderID    int64   `json:"sell_order_id"`
+	AmountStr      string  `json:"amount_str"`
+	PriceStr       string  `json:"price_str"`
+	Timestamp      string  `json:"timestamp"`
+	Price          float64 `json:"price"`
+	Type           int     `json:"type"`
+	ID             int     `json:"id"`
+}
+
+type websocketOrderBookResponse struct {
+	websocketResponse
+	Data websocketOrderBook `json:"data"`
+}
+
+type websocketOrderBook struct {
+	Asks           [][]string `json:"asks"`
+	Bids           [][]string `json:"bids"`
+	Timestamp      int64      `json:"timestamp,string"`
+	Microtimestamp string     `json:"microtimestamp"`
+}

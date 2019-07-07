@@ -187,13 +187,13 @@ func (b *BTSE) CancelOrder(order *exchange.OrderCancellation) error {
 // If product ID is sent, all orders of that specified market will be cancelled
 // If not specified, all orders of all markets will be cancelled
 func (b *BTSE) CancelAllOrders(orderCancellation *exchange.OrderCancellation) (exchange.CancelAllOrdersResponse, error) {
+	var resp exchange.CancelAllOrdersResponse
 	r, err := b.CancelOrders(exchange.FormatExchangeCurrency(b.Name,
 		orderCancellation.CurrencyPair).String())
 	if err != nil {
-		return exchange.CancelAllOrdersResponse{}, err
+		return resp, err
 	}
 
-	var resp exchange.CancelAllOrdersResponse
 	switch r.Code {
 	case -1:
 		return resp, errors.New("order cancellation unsuccessful")
@@ -357,4 +357,28 @@ func (b *BTSE) GetFeeByType(feeBuilder *exchange.FeeBuilder) (float64, error) {
 		feeBuilder.FeeType = exchange.OfflineTradeFee
 	}
 	return b.GetFee(feeBuilder)
+}
+
+// SubscribeToWebsocketChannels appends to ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle subscribing
+func (b *BTSE) SubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	b.Websocket.SubscribeToChannels(channels)
+	return nil
+}
+
+// UnsubscribeToWebsocketChannels removes from ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle unsubscribing
+func (b *BTSE) UnsubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	b.Websocket.UnsubscribeToChannels(channels)
+	return nil
+}
+
+// GetSubscriptions returns a copied list of subscriptions
+func (b *BTSE) GetSubscriptions() ([]exchange.WebsocketChannelSubscription, error) {
+	return b.Websocket.GetSubscriptions(), nil
+}
+
+// AuthenticateWebsocket sends an authentication message to the websocket
+func (b *BTSE) AuthenticateWebsocket() error {
+	return common.ErrFunctionNotSupported
 }

@@ -219,7 +219,8 @@ func (y *Yobit) CancelAllOrders(_ *exchange.OrderCancellation) (exchange.CancelA
 		for key := range activeOrders {
 			orderIDInt, err := strconv.ParseInt(key, 10, 64)
 			if err != nil {
-				return cancelAllOrdersResponse, err
+				cancelAllOrdersResponse.OrderStatus[key] = err.Error()
+				continue
 			}
 
 			_, err = y.CancelExistingOrder(orderIDInt)
@@ -362,4 +363,26 @@ func (y *Yobit) GetOrderHistory(getOrdersRequest *exchange.GetOrdersRequest) ([]
 	exchange.FilterOrdersBySide(&orders, getOrdersRequest.OrderSide)
 
 	return orders, nil
+}
+
+// SubscribeToWebsocketChannels appends to ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle subscribing
+func (y *Yobit) SubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	return common.ErrFunctionNotSupported
+}
+
+// UnsubscribeToWebsocketChannels removes from ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle unsubscribing
+func (y *Yobit) UnsubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	return common.ErrFunctionNotSupported
+}
+
+// GetSubscriptions returns a copied list of subscriptions
+func (y *Yobit) GetSubscriptions() ([]exchange.WebsocketChannelSubscription, error) {
+	return nil, common.ErrFunctionNotSupported
+}
+
+// AuthenticateWebsocket sends an authentication message to the websocket
+func (y *Yobit) AuthenticateWebsocket() error {
+	return common.ErrFunctionNotSupported
 }

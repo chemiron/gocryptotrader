@@ -29,7 +29,7 @@ func (h *HUOBI) Start(wg *sync.WaitGroup) {
 // Run implements the HUOBI wrapper
 func (h *HUOBI) Run() {
 	if h.Verbose {
-		log.Debugf("%s Websocket: %s (url: %s).\n", h.GetName(), common.IsEnabled(h.Websocket.IsEnabled()), huobiSocketIOAddress)
+		log.Debugf("%s Websocket: %s (url: %s).\n", h.GetName(), common.IsEnabled(h.Websocket.IsEnabled()), wsMarketURL)
 		log.Debugf("%s polling delay: %ds.\n", h.GetName(), h.RESTPollingDelay)
 		log.Debugf("%s %d currencies enabled: %s.\n", h.GetName(), len(h.EnabledPairs), h.EnabledPairs)
 	}
@@ -47,7 +47,7 @@ func (h *HUOBI) Run() {
 		if common.StringDataContains(h.BaseCurrencies.Strings(), "CNY") {
 			cfg := config.GetConfig()
 			exchCfg, errCNY := cfg.GetExchangeConfig(h.Name)
-			if err != nil {
+			if errCNY != nil {
 				log.Errorf("%s failed to get exchange config. %s\n", h.Name, errCNY)
 				return
 			}
@@ -335,9 +335,7 @@ func (h *HUOBI) CancelOrder(order *exchange.OrderCancellation) error {
 
 // CancelAllOrders cancels all orders associated with a currency pair
 func (h *HUOBI) CancelAllOrders(orderCancellation *exchange.OrderCancellation) (exchange.CancelAllOrdersResponse, error) {
-	cancelAllOrdersResponse := exchange.CancelAllOrdersResponse{
-		OrderStatus: make(map[string]string),
-	}
+	var cancelAllOrdersResponse exchange.CancelAllOrdersResponse
 	for _, currency := range h.GetEnabledCurrencies() {
 		resp, err := h.CancelOpenOrdersBatch(orderCancellation.AccountID, exchange.FormatExchangeCurrency(h.Name, currency).String())
 		if err != nil {
@@ -429,7 +427,7 @@ func (h *HUOBI) GetActiveOrders(getOrdersRequest *exchange.GetOrdersRequest) ([]
 				CurrencyPair:   c,
 				Exchange:       h.Name,
 				ExecutedAmount: resp[i].FilledAmount,
-				OrderDate:      time.Unix(resp[i].CreatedAt, 0),
+				OrderDate:      time.Unix(0, resp[i].CreatedAt*int64(time.Millisecond)),
 				Status:         resp[i].State,
 				AccountID:      strconv.FormatFloat(resp[i].AccountID, 'f', -1, 64),
 				Fee:            resp[i].FilledFees,
@@ -477,7 +475,7 @@ func (h *HUOBI) GetOrderHistory(getOrdersRequest *exchange.GetOrdersRequest) ([]
 				CurrencyPair:   c,
 				Exchange:       h.Name,
 				ExecutedAmount: resp[i].FilledAmount,
-				OrderDate:      time.Unix(resp[i].CreatedAt, 0),
+				OrderDate:      time.Unix(0, resp[i].CreatedAt*int64(time.Millisecond)),
 				Status:         resp[i].State,
 				AccountID:      strconv.FormatFloat(resp[i].AccountID, 'f', -1, 64),
 				Fee:            resp[i].FilledFees,
@@ -510,4 +508,28 @@ func setOrderSideAndType(requestType string, orderDetail *exchange.OrderDetail) 
 		orderDetail.OrderSide = exchange.SellOrderSide
 		orderDetail.OrderType = exchange.LimitOrderType
 	}
+}
+
+// SubscribeToWebsocketChannels appends to ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle subscribing
+func (h *HUOBI) SubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	h.Websocket.SubscribeToChannels(channels)
+	return nil
+}
+
+// UnsubscribeToWebsocketChannels removes from ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle unsubscribing
+func (h *HUOBI) UnsubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	h.Websocket.UnsubscribeToChannels(channels)
+	return nil
+}
+
+// GetSubscriptions returns a copied list of subscriptions
+func (h *HUOBI) GetSubscriptions() ([]exchange.WebsocketChannelSubscription, error) {
+	return h.Websocket.GetSubscriptions(), nil
+}
+
+// AuthenticateWebsocket sends an authentication message to the websocket
+func (h *HUOBI) AuthenticateWebsocket() error {
+	return h.wsLogin()
 }

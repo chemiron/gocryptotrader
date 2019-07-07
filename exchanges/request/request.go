@@ -8,11 +8,13 @@ import (
 	"io/ioutil"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"sync"
 	"time"
 
 	"github.com/thrasher-/gocryptotrader/common"
+	"github.com/thrasher-/gocryptotrader/exchanges/nonce"
 	log "github.com/thrasher-/gocryptotrader/logger"
 )
 
@@ -36,7 +38,10 @@ type Requester struct {
 	timeoutRetryAttempts int
 	m                    sync.Mutex
 	Jobs                 chan Job
+	disengage            chan struct{}
 	WorkerStarted        bool
+	Nonce                nonce.Nonce
+	fifoLock             sync.Mutex
 }
 
 // RateLimit struct
@@ -55,15 +60,16 @@ type JobResult struct {
 
 // Job holds a request job
 type Job struct {
-	Request     *http.Request
-	Method      string
-	Path        string
-	Headers     map[string]string
-	Body        io.Reader
-	Result      interface{}
-	JobResult   chan *JobResult
-	AuthRequest bool
-	Verbose     bool
+	Request       *http.Request
+	Method        string
+	Path          string
+	Headers       map[string]string
+	Body          io.Reader
+	Result        interface{}
+	JobResult     chan *JobResult
+	AuthRequest   bool
+	Verbose       bool
+	HTTPDebugging bool
 }
 
 // NewRateLimit creates a new RateLimit
@@ -214,6 +220,7 @@ func New(name string, authLimit, unauthLimit *RateLimit, httpRequester *http.Cli
 		AuthLimit:            authLimit,
 		Name:                 name,
 		Jobs:                 make(chan Job, maxRequestJobs),
+		disengage:            make(chan struct{}, 1),
 		timeoutRetryAttempts: defaultTimeoutRetryAttempts,
 	}
 }
@@ -257,7 +264,7 @@ func (r *Requester) checkRequest(method, path string, body io.Reader, headers ma
 }
 
 // DoRequest performs a HTTP/HTTPS request with the supplied params
-func (r *Requester) DoRequest(req *http.Request, path string, body io.Reader, result interface{}, authRequest, verbose bool) error {
+func (r *Requester) DoRequest(req *http.Request, path string, body io.Reader, result interface{}, authRequest, verbose, httpDebug bool) error {
 	if verbose {
 		log.Debugf("%s exchange request path: %s requires rate limiter: %v", r.Name, path, r.RequiresRateLimiter())
 		for k, d := range req.Header {
@@ -323,7 +330,6 @@ func (r *Requester) DoRequest(req *http.Request, path string, body io.Reader, re
 
 		if resp.StatusCode != 200 && resp.StatusCode != 201 && resp.StatusCode != 202 {
 			err = fmt.Errorf("unsuccessful HTTP status code: %d", resp.StatusCode)
-
 			if verbose {
 				err = fmt.Errorf("%s\n%s", err.Error(),
 					fmt.Sprintf("%s exchange raw response: %s", r.Name, string(contents)))
@@ -332,10 +338,21 @@ func (r *Requester) DoRequest(req *http.Request, path string, body io.Reader, re
 			return err
 		}
 
+		if httpDebug {
+			dump, err := httputil.DumpResponse(resp, false)
+			if err != nil {
+				log.Errorf("DumpResponse invalid response: %v:", err)
+			}
+			log.Debugf("DumpResponse Headers (%v):\n%s", path, dump)
+			log.Debugf("DumpResponse Body (%v):\n %s", path, string(contents))
+		}
+
 		resp.Body.Close()
 		if verbose {
 			log.Debugf("HTTP status: %s, Code: %v", resp.Status, resp.StatusCode)
-			log.Debugf("%s exchange raw response: %s", r.Name, string(contents))
+			if !httpDebug {
+				log.Debugf("%s exchange raw response: %s", r.Name, string(contents))
+			}
 		}
 
 		if result != nil {
@@ -354,7 +371,7 @@ func (r *Requester) worker() {
 			if !r.IsRateLimited(x.AuthRequest) {
 				r.IncrementRequests(x.AuthRequest)
 
-				err := r.DoRequest(x.Request, x.Path, x.Body, x.Result, x.AuthRequest, x.Verbose)
+				err := r.DoRequest(x.Request, x.Path, x.Body, x.Result, x.AuthRequest, x.Verbose, x.HTTPDebugging)
 				x.JobResult <- &JobResult{
 					Error:  err,
 					Result: x.Result,
@@ -378,7 +395,7 @@ func (r *Requester) worker() {
 						log.Debugf("%s request. No longer rate limited! Doing request", r.Name)
 					}
 
-					err := r.DoRequest(x.Request, x.Path, x.Body, x.Result, x.AuthRequest, x.Verbose)
+					err := r.DoRequest(x.Request, x.Path, x.Body, x.Result, x.AuthRequest, x.Verbose, x.HTTPDebugging)
 					x.JobResult <- &JobResult{
 						Error:  err,
 						Result: x.Result,
@@ -391,29 +408,47 @@ func (r *Requester) worker() {
 }
 
 // SendPayload handles sending HTTP/HTTPS requests
-func (r *Requester) SendPayload(method, path string, headers map[string]string, body io.Reader, result interface{}, authRequest, verbose bool) error {
+func (r *Requester) SendPayload(method, path string, headers map[string]string, body io.Reader, result interface{}, authRequest, nonceEnabled, verbose, httpDebugging bool) error {
+	if !nonceEnabled {
+		r.lock()
+	}
+
 	if r == nil || r.Name == "" {
+		r.unlock()
 		return errors.New("not initiliased, SetDefaults() called before making request?")
 	}
 
 	if !IsValidMethod(method) {
+		r.unlock()
 		return fmt.Errorf("incorrect method supplied %s: supported %s", method, supportedMethods)
 	}
 
 	if path == "" {
+		r.unlock()
 		return errors.New("invalid path")
 	}
 
 	req, err := r.checkRequest(method, path, body, headers)
 	if err != nil {
+		r.unlock()
 		return err
 	}
 
+	if httpDebugging {
+		dump, err := httputil.DumpRequestOut(req, true)
+		if err != nil {
+			log.Errorf("DumpRequest invalid response %v:", err)
+		}
+		log.Debugf("DumpRequest:\n%s", dump)
+	}
+
 	if !r.RequiresRateLimiter() {
-		return r.DoRequest(req, path, body, result, authRequest, verbose)
+		r.unlock()
+		return r.DoRequest(req, path, body, result, authRequest, verbose, httpDebugging)
 	}
 
 	if len(r.Jobs) == maxRequestJobs {
+		r.unlock()
 		return errors.New("max request jobs reached")
 	}
 
@@ -428,21 +463,23 @@ func (r *Requester) SendPayload(method, path string, headers map[string]string, 
 	jobResult := make(chan *JobResult)
 
 	newJob := Job{
-		Request:     req,
-		Method:      method,
-		Path:        path,
-		Headers:     headers,
-		Body:        body,
-		Result:      result,
-		JobResult:   jobResult,
-		AuthRequest: authRequest,
-		Verbose:     verbose,
+		Request:       req,
+		Method:        method,
+		Path:          path,
+		Headers:       headers,
+		Body:          body,
+		Result:        result,
+		JobResult:     jobResult,
+		AuthRequest:   authRequest,
+		Verbose:       verbose,
+		HTTPDebugging: httpDebugging,
 	}
 
 	if verbose {
 		log.Debugf("%s request. Attaching new job.", r.Name)
 	}
 	r.Jobs <- newJob
+	r.unlock()
 
 	if verbose {
 		log.Debugf("%s request. Waiting for job to complete.", r.Name)
@@ -452,7 +489,36 @@ func (r *Requester) SendPayload(method, path string, headers map[string]string, 
 	if verbose {
 		log.Debugf("%s request. Job complete.", r.Name)
 	}
+
 	return resp.Error
+}
+
+// GetNonce returns a nonce for requests. This locks and enforces concurrent
+// nonce FIFO on the buffered job channel
+func (r *Requester) GetNonce(isNano bool) nonce.Value {
+	r.lock()
+	if r.Nonce.Get() == 0 {
+		if isNano {
+			r.Nonce.Set(time.Now().UnixNano())
+		} else {
+			r.Nonce.Set(time.Now().Unix())
+		}
+		return r.Nonce.Get()
+	}
+	r.Nonce.Inc()
+	return r.Nonce.Get()
+}
+
+// GetNonceMilli returns a nonce for requests. This locks and enforces concurrent
+// nonce FIFO on the buffered job channel this is for millisecond
+func (r *Requester) GetNonceMilli() nonce.Value {
+	r.lock()
+	if r.Nonce.Get() == 0 {
+		r.Nonce.Set(time.Now().UnixNano() / int64(time.Millisecond))
+		return r.Nonce.Get()
+	}
+	r.Nonce.Inc()
+	return r.Nonce.Get()
 }
 
 // SetProxy sets a proxy address to the client transport
@@ -466,4 +532,34 @@ func (r *Requester) SetProxy(p *url.URL) error {
 		TLSHandshakeTimeout: proxyTLSTimeout,
 	}
 	return nil
+}
+
+// lock locks and sets up an issue timer, if something errors out of scope it
+// automatically unlocks
+func (r *Requester) lock() {
+	if r.disengage == nil {
+		r.disengage = make(chan struct{}, 1)
+	}
+	var wg sync.WaitGroup
+	r.fifoLock.Lock()
+	wg.Add(1)
+	go func() {
+		timer := time.NewTimer(50 * time.Millisecond)
+		wg.Done()
+		select {
+		case <-timer.C:
+			log.Errorf("Unlocking due to possible error for %s", r.Name)
+			r.fifoLock.Unlock()
+
+		case <-r.disengage:
+			return
+		}
+	}()
+	wg.Wait()
+}
+
+// unlock unlocks mtx and shuts down a timer
+func (r *Requester) unlock() {
+	r.disengage <- struct{}{}
+	r.fifoLock.Unlock()
 }

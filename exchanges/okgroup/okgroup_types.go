@@ -183,7 +183,7 @@ type CancelSpotOrderRequest struct {
 // CancelSpotOrderResponse response data for CancelSpotOrder
 type CancelSpotOrderResponse struct {
 	ClientOID string `json:"client_oid"`
-	OrderID   int64  `json:"order_id"`
+	OrderID   int64  `json:"order_id,string"`
 	Result    bool   `json:"result"`
 }
 
@@ -682,11 +682,19 @@ type GetFuturesOrderBookRequest struct {
 	Size         int64  `url:"size,omitempty"` // [optional] The size of the price range (max: 200)
 }
 
+// FuturesOrderbookItem stores an individual futures orderbook item
+type FuturesOrderbookItem struct {
+	Price                 float64
+	Size                  int64
+	ForceLiquidatedOrders int64 // Number of force liquidated orders
+	NumberOrders          int64 // Number of orders on the price
+}
+
 // GetFuturesOrderBookResponse response data for GetFuturesOrderBook
 type GetFuturesOrderBookResponse struct {
-	Asks      [][]float64 `json:"asks"` // [[0: Price, 1: Size price, 2: number of force liquidated orders, 3: number of orders on the price]]
-	Bids      [][]float64 `json:"bids"` // [[0: Price, 1: Size price, 2: number of force liquidated orders, 3: number of orders on the price]]
-	Timestamp time.Time   `json:"timestamp"`
+	Asks      []FuturesOrderbookItem
+	Bids      []FuturesOrderbookItem
+	Timestamp time.Time
 }
 
 // GetFuturesTokenInfoResponse response data for GetFuturesOrderBook
@@ -782,7 +790,7 @@ type GetFuturesCurrentPriceLimitResponse struct {
 
 // GetFuturesCurrentMarkPriceResponse response data for GetFuturesCurrentMarkPrice
 type GetFuturesCurrentMarkPriceResponse struct {
-	MarkPrice    float64   `json:"mark_price"`
+	MarkPrice    float64   `json:"mark_price,string"`
 	InstrumentID string    `json:"instrument_id"`
 	Timestamp    time.Time `json:"timestamp"`
 }
@@ -798,12 +806,12 @@ type GetFuturesForceLiquidatedOrdersRequest struct {
 
 // GetFuturesForceLiquidatedOrdersResponse response data for GetFuturesForceLiquidatedOrders
 type GetFuturesForceLiquidatedOrdersResponse struct {
-	Loss         float64 `json:"loss"`
-	Size         int64   `json:"size"`
-	Price        float64 `json:"price"`
+	Loss         float64 `json:"loss,string"`
+	Size         int64   `json:"size,string"`
+	Price        float64 `json:"price,string"`
 	CreatedAt    string  `json:"created_at"`
 	InstrumentID string  `json:"instrument_id"`
-	Type         int64   `json:"type"`
+	Type         int64   `json:"type,string"`
 }
 
 // GetFuturesTagPriceResponse response data for GetFuturesTagPrice
@@ -1295,7 +1303,8 @@ type WebsocketEventRequest struct {
 // WebsocketEventResponse contains event data for a websocket channel
 type WebsocketEventResponse struct {
 	Event   string `json:"event"`
-	Channel string `json:"channel"`
+	Channel string `json:"channel,omitempty"`
+	Success bool   `json:"success,omitempty"`
 }
 
 // WebsocketDataResponse formats all response data for a websocket event

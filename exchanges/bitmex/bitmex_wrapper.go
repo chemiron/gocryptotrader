@@ -247,7 +247,9 @@ func (b *Bitmex) CancelAllOrders(_ *exchange.OrderCancellation) (exchange.Cancel
 	}
 
 	for i := range orders {
-		cancelAllOrdersResponse.OrderStatus[orders[i].OrderID] = orders[i].OrdRejReason
+		if orders[i].OrdRejReason != "" {
+			cancelAllOrdersResponse.OrderStatus[orders[i].OrderID] = orders[i].OrdRejReason
+		}
 	}
 
 	return cancelAllOrdersResponse, nil
@@ -395,4 +397,28 @@ func (b *Bitmex) GetOrderHistory(getOrdersRequest *exchange.GetOrdersRequest) ([
 	exchange.FilterOrdersByCurrencies(&orders, getOrdersRequest.Currencies)
 
 	return orders, nil
+}
+
+// SubscribeToWebsocketChannels appends to ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle subscribing
+func (b *Bitmex) SubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	b.Websocket.SubscribeToChannels(channels)
+	return nil
+}
+
+// UnsubscribeToWebsocketChannels removes from ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle unsubscribing
+func (b *Bitmex) UnsubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	b.Websocket.UnsubscribeToChannels(channels)
+	return nil
+}
+
+// GetSubscriptions returns a copied list of subscriptions
+func (b *Bitmex) GetSubscriptions() ([]exchange.WebsocketChannelSubscription, error) {
+	return b.Websocket.GetSubscriptions(), nil
+}
+
+// AuthenticateWebsocket sends an authentication message to the websocket
+func (b *Bitmex) AuthenticateWebsocket() error {
+	return b.websocketSendAuth()
 }

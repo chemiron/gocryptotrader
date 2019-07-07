@@ -230,14 +230,11 @@ func (p *Poloniex) ModifyOrder(action *exchange.ModifyOrder) (string, error) {
 // CancelOrder cancels an order by its corresponding ID number
 func (p *Poloniex) CancelOrder(order *exchange.OrderCancellation) error {
 	orderIDInt, err := strconv.ParseInt(order.OrderID, 10, 64)
-
 	if err != nil {
 		return err
 	}
 
-	_, err = p.CancelExistingOrder(orderIDInt)
-
-	return err
+	return p.CancelExistingOrder(orderIDInt)
 }
 
 // CancelAllOrders cancels all orders associated with a currency pair
@@ -252,7 +249,7 @@ func (p *Poloniex) CancelAllOrders(_ *exchange.OrderCancellation) (exchange.Canc
 
 	for _, openOrderPerCurrency := range openOrders.Data {
 		for _, openOrder := range openOrderPerCurrency {
-			_, err = p.CancelExistingOrder(openOrder.OrderNumber)
+			err = p.CancelExistingOrder(openOrder.OrderNumber)
 			if err != nil {
 				cancelAllOrdersResponse.OrderStatus[strconv.FormatInt(openOrder.OrderNumber, 10)] = err.Error()
 			}
@@ -395,4 +392,28 @@ func (p *Poloniex) GetOrderHistory(getOrdersRequest *exchange.GetOrdersRequest) 
 	exchange.FilterOrdersBySide(&orders, getOrdersRequest.OrderSide)
 
 	return orders, nil
+}
+
+// SubscribeToWebsocketChannels appends to ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle subscribing
+func (p *Poloniex) SubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	p.Websocket.SubscribeToChannels(channels)
+	return nil
+}
+
+// UnsubscribeToWebsocketChannels removes from ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle unsubscribing
+func (p *Poloniex) UnsubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	p.Websocket.UnsubscribeToChannels(channels)
+	return nil
+}
+
+// GetSubscriptions returns a copied list of subscriptions
+func (p *Poloniex) GetSubscriptions() ([]exchange.WebsocketChannelSubscription, error) {
+	return p.Websocket.GetSubscriptions(), nil
+}
+
+// AuthenticateWebsocket sends an authentication message to the websocket
+func (p *Poloniex) AuthenticateWebsocket() error {
+	return common.ErrFunctionNotSupported
 }

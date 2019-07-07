@@ -105,23 +105,13 @@ func (b *Bitmex) WsConnector() error {
 	}
 
 	go b.wsHandleIncomingData()
+	b.GenerateDefaultSubscriptions()
 
-	err = b.websocketSubscribe()
+	err = b.websocketSendAuth()
 	if err != nil {
-		closeError := b.WebsocketConn.Close()
-		if closeError != nil {
-			return fmt.Errorf("bitmex_websocket.go error - Websocket connection could not close %s",
-				closeError)
-		}
-		return err
+		log.Errorf("%v - authentication failed: %v", b.Name, err)
 	}
-
-	if b.AuthenticatedAPISupport {
-		err := b.websocketSendAuth()
-		if err != nil {
-			return err
-		}
-	}
+	b.GenerateAuthenticatedSubscriptions()
 	return nil
 }
 
@@ -143,11 +133,6 @@ func (b *Bitmex) wsHandleIncomingData() {
 	b.Websocket.Wg.Add(1)
 
 	defer func() {
-		err := b.WebsocketConn.Close()
-		if err != nil {
-			b.Websocket.DataHandler <- fmt.Errorf("bitmex_websocket.go - Unable to close Websocket connection. Error: %s",
-				err)
-		}
 		b.Websocket.Wg.Done()
 	}()
 
@@ -170,7 +155,7 @@ func (b *Bitmex) wsHandleIncomingData() {
 			}
 
 			if common.StringContains(message, "ping") {
-				err = b.WebsocketConn.WriteJSON("pong")
+				err = b.wsSend("pong")
 				if err != nil {
 					b.Websocket.DataHandler <- err
 					continue
@@ -204,11 +189,15 @@ func (b *Bitmex) wsHandleIncomingData() {
 				}
 
 				if decodedResp.Success {
-					if b.Verbose {
-						if len(quickCapture) == 3 {
+					b.Websocket.DataHandler <- decodedResp
+					if len(quickCapture) == 3 {
+						if b.Verbose {
 							log.Debugf("%s websocket: Successfully subscribed to %s",
 								b.Name, decodedResp.Subscribe)
-						} else {
+						}
+					} else {
+						b.Websocket.SetCanUseAuthenticatedEndpoints(true)
+						if b.Verbose {
 							log.Debugf("%s websocket: Successfully authenticated websocket connection",
 								b.Name)
 						}
@@ -278,7 +267,6 @@ func (b *Bitmex) wsHandleIncomingData() {
 
 				case bitmexWSAnnouncement:
 					var announcement AnnouncementData
-
 					err = common.JSONDecode(resp.Raw, &announcement)
 					if err != nil {
 						b.Websocket.DataHandler <- err
@@ -290,7 +278,70 @@ func (b *Bitmex) wsHandleIncomingData() {
 					}
 
 					b.Websocket.DataHandler <- announcement.Data
-
+				case bitmexWSAffiliate:
+					var response WsAffiliateResponse
+					err = common.JSONDecode(resp.Raw, &response)
+					if err != nil {
+						b.Websocket.DataHandler <- err
+						continue
+					}
+					b.Websocket.DataHandler <- response
+				case bitmexWSExecution:
+					var response WsExecutionResponse
+					err = common.JSONDecode(resp.Raw, &response)
+					if err != nil {
+						b.Websocket.DataHandler <- err
+						continue
+					}
+					b.Websocket.DataHandler <- response
+				case bitmexWSOrder:
+					var response WsOrderResponse
+					err = common.JSONDecode(resp.Raw, &response)
+					if err != nil {
+						b.Websocket.DataHandler <- err
+						continue
+					}
+					b.Websocket.DataHandler <- response
+				case bitmexWSMargin:
+					var response WsMarginResponse
+					err = common.JSONDecode(resp.Raw, &response)
+					if err != nil {
+						b.Websocket.DataHandler <- err
+						continue
+					}
+					b.Websocket.DataHandler <- response
+				case bitmexWSPosition:
+					var response WsPositionResponse
+					err = common.JSONDecode(resp.Raw, &response)
+					if err != nil {
+						b.Websocket.DataHandler <- err
+						continue
+					}
+					b.Websocket.DataHandler <- response
+				case bitmexWSPrivateNotifications:
+					var response WsPrivateNotificationsResponse
+					err = common.JSONDecode(resp.Raw, &response)
+					if err != nil {
+						b.Websocket.DataHandler <- err
+						continue
+					}
+					b.Websocket.DataHandler <- response
+				case bitmexWSTransact:
+					var response WsTransactResponse
+					err = common.JSONDecode(resp.Raw, &response)
+					if err != nil {
+						b.Websocket.DataHandler <- err
+						continue
+					}
+					b.Websocket.DataHandler <- response
+				case bitmexWSWallet:
+					var response WsWalletResponse
+					err = common.JSONDecode(resp.Raw, &response)
+					if err != nil {
+						b.Websocket.DataHandler <- err
+						continue
+					}
+					b.Websocket.DataHandler <- response
 				default:
 					b.Websocket.DataHandler <- fmt.Errorf("%s websocket error: Table unknown - %s",
 						b.Name, decodedResp.Table)
@@ -398,40 +449,115 @@ func (b *Bitmex) processOrderbook(data []OrderBookL2, action string, currencyPai
 	return nil
 }
 
-// WebsocketSubscribe subscribes to a websocket channel
-func (b *Bitmex) websocketSubscribe() error {
+// GenerateDefaultSubscriptions Adds default subscriptions to websocket to be handled by ManageSubscriptions()
+func (b *Bitmex) GenerateDefaultSubscriptions() {
 	contracts := b.GetEnabledCurrencies()
-
-	// Subscriber
-	var subscriber WebsocketRequest
-	subscriber.Command = "subscribe"
-
-	// Announcement subscribe
-	subscriber.Arguments = append(subscriber.Arguments, bitmexWSAnnouncement)
-
-	for _, contract := range contracts {
-		// Orderbook and Trade subscribe
-		// NOTE more added here in future
-		subscriber.Arguments = append(subscriber.Arguments,
-			bitmexWSOrderbookL2+":"+contract.String(),
-			bitmexWSTrade+":"+contract.String())
+	channels := []string{bitmexWSOrderbookL2, bitmexWSTrade}
+	subscriptions := []exchange.WebsocketChannelSubscription{
+		{
+			Channel: bitmexWSAnnouncement,
+		},
 	}
 
-	return b.WebsocketConn.WriteJSON(subscriber)
+	for i := range channels {
+		for j := range contracts {
+			subscriptions = append(subscriptions, exchange.WebsocketChannelSubscription{
+				Channel:  fmt.Sprintf("%v:%v", channels[i], contracts[j].String()),
+				Currency: contracts[j],
+			})
+		}
+	}
+	b.Websocket.SubscribeToChannels(subscriptions)
+}
+
+// GenerateAuthenticatedSubscriptions Adds authenticated subscriptions to websocket to be handled by ManageSubscriptions()
+func (b *Bitmex) GenerateAuthenticatedSubscriptions() {
+	if !b.Websocket.CanUseAuthenticatedEndpoints() {
+		return
+	}
+	contracts := b.GetEnabledCurrencies()
+	channels := []string{bitmexWSExecution,
+		bitmexWSPosition,
+	}
+	subscriptions := []exchange.WebsocketChannelSubscription{
+		{
+			Channel: bitmexWSAffiliate,
+		},
+		{
+			Channel: bitmexWSOrder,
+		},
+		{
+			Channel: bitmexWSMargin,
+		},
+		{
+			Channel: bitmexWSPrivateNotifications,
+		},
+		{
+			Channel: bitmexWSTransact,
+		},
+		{
+			Channel: bitmexWSWallet,
+		},
+	}
+	for i := range channels {
+		for j := range contracts {
+			subscriptions = append(subscriptions, exchange.WebsocketChannelSubscription{
+				Channel:  fmt.Sprintf("%v:%v", channels[i], contracts[j].String()),
+				Currency: contracts[j],
+			})
+		}
+	}
+	b.Websocket.SubscribeToChannels(subscriptions)
+}
+
+// Subscribe subscribes to a websocket channel
+func (b *Bitmex) Subscribe(channelToSubscribe exchange.WebsocketChannelSubscription) error {
+	var subscriber WebsocketRequest
+	subscriber.Command = "subscribe"
+	subscriber.Arguments = append(subscriber.Arguments, channelToSubscribe.Channel)
+	return b.wsSend(subscriber)
+}
+
+// Unsubscribe sends a websocket message to stop receiving data from the channel
+func (b *Bitmex) Unsubscribe(channelToSubscribe exchange.WebsocketChannelSubscription) error {
+	var subscriber WebsocketRequest
+	subscriber.Command = "unsubscribe"
+	subscriber.Arguments = append(subscriber.Arguments,
+		channelToSubscribe.Params["args"],
+		channelToSubscribe.Channel+":"+channelToSubscribe.Currency.String())
+	return b.wsSend(subscriber)
 }
 
 // WebsocketSendAuth sends an authenticated subscription
 func (b *Bitmex) websocketSendAuth() error {
+	if !b.GetAuthenticatedAPISupport(exchange.WebsocketAuthentication) {
+		return fmt.Errorf("%v AuthenticatedWebsocketAPISupport not enabled", b.Name)
+	}
+	b.Websocket.SetCanUseAuthenticatedEndpoints(true)
 	timestamp := time.Now().Add(time.Hour * 1).Unix()
 	newTimestamp := strconv.FormatInt(timestamp, 10)
 	hmac := common.GetHMAC(common.HashSHA256,
 		[]byte("GET/realtime"+newTimestamp),
 		[]byte(b.APISecret))
 	signature := common.HexEncodeToString(hmac)
-
 	var sendAuth WebsocketRequest
 	sendAuth.Command = "authKeyExpires"
 	sendAuth.Arguments = append(sendAuth.Arguments, b.APIKey, timestamp,
 		signature)
-	return b.WebsocketConn.WriteJSON(sendAuth)
+	err := b.wsSend(sendAuth)
+	if err != nil {
+		b.Websocket.SetCanUseAuthenticatedEndpoints(false)
+		return err
+	}
+	return nil
+}
+
+// WsSend sends data to the websocket server
+func (b *Bitmex) wsSend(data interface{}) error {
+	b.wsRequestMtx.Lock()
+	defer b.wsRequestMtx.Unlock()
+	if b.Verbose {
+		log.Debugf("%v sending message to websocket %v", b.Name, data)
+	}
+	return b.WebsocketConn.WriteJSON(data)
 }

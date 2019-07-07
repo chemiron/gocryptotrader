@@ -15,7 +15,6 @@ import (
 	"github.com/thrasher-/gocryptotrader/exchanges/bitmex"
 	"github.com/thrasher-/gocryptotrader/exchanges/bitstamp"
 	"github.com/thrasher-/gocryptotrader/exchanges/bittrex"
-	"github.com/thrasher-/gocryptotrader/exchanges/btcc"
 	"github.com/thrasher-/gocryptotrader/exchanges/btcmarkets"
 	"github.com/thrasher-/gocryptotrader/exchanges/btse"
 	"github.com/thrasher-/gocryptotrader/exchanges/coinbasepro"
@@ -148,8 +147,6 @@ func LoadExchange(name string, useWG bool, wg *sync.WaitGroup) error {
 		exch = new(bitstamp.Bitstamp)
 	case "bittrex":
 		exch = new(bittrex.Bittrex)
-	case "btcc":
-		exch = new(btcc.BTCC)
 	case "btc markets":
 		exch = new(btcmarkets.BTCMarkets)
 	case "btse":
@@ -244,12 +241,11 @@ func SetupExchanges() {
 		if !exch.Enabled {
 			log.Debugf("%s: Exchange support: Disabled", exch.Name)
 			continue
-		} else {
-			err := LoadExchange(exch.Name, true, &wg)
-			if err != nil {
-				log.Errorf("LoadExchange %s failed: %s", exch.Name, err)
-				continue
-			}
+		}
+		err := LoadExchange(exch.Name, true, &wg)
+		if err != nil {
+			log.Errorf("LoadExchange %s failed: %s", exch.Name, err)
+			continue
 		}
 		log.Debugf(
 			"%s: Exchange support: Enabled (Authenticated API support: %s - Verbose mode: %s).\n",

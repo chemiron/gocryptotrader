@@ -96,6 +96,7 @@ func (b *Bithumb) Setup(exch *config.ExchangeConfig) {
 		b.SetHTTPClientUserAgent(exch.HTTPUserAgent)
 		b.RESTPollingDelay = exch.RESTPollingDelay
 		b.Verbose = exch.Verbose
+		b.HTTPDebugging = exch.HTTPDebugging
 		b.Websocket.SetWsStatusAndConnection(exch.Websocket)
 		b.BaseCurrencies = exch.BaseCurrencies
 		b.AvailablePairs = exch.AvailablePairs
@@ -543,7 +544,7 @@ func (b *Bithumb) MarketSellOrder(currency string, units float64) (MarketSell, e
 
 // SendHTTPRequest sends an unauthenticated HTTP request
 func (b *Bithumb) SendHTTPRequest(path string, result interface{}) error {
-	return b.SendPayload(http.MethodGet, path, nil, nil, result, false, b.Verbose)
+	return b.SendPayload(http.MethodGet, path, nil, nil, result, false, false, b.Verbose, b.HTTPDebugging)
 }
 
 // SendAuthenticatedHTTPRequest sends an authenticated HTTP request to bithumb
@@ -556,15 +557,11 @@ func (b *Bithumb) SendAuthenticatedHTTPRequest(path string, params url.Values, r
 		params = url.Values{}
 	}
 
-	if b.Nonce.Get() == 0 {
-		b.Nonce.Set(time.Now().UnixNano() / int64(time.Millisecond))
-	} else {
-		b.Nonce.Inc()
-	}
+	n := b.Requester.GetNonceMilli().String()
 
 	params.Set("endpoint", path)
 	payload := params.Encode()
-	hmacPayload := path + string(0) + payload + string(0) + b.Nonce.String()
+	hmacPayload := path + string(0) + payload + string(0) + n
 	hmac := common.GetHMAC(common.HashSHA512,
 		[]byte(hmacPayload),
 		[]byte(b.APISecret))
@@ -573,7 +570,7 @@ func (b *Bithumb) SendAuthenticatedHTTPRequest(path string, params url.Values, r
 	headers := make(map[string]string)
 	headers["Api-Key"] = b.APIKey
 	headers["Api-Sign"] = common.Base64Encode([]byte(hmacStr))
-	headers["Api-Nonce"] = b.Nonce.String()
+	headers["Api-Nonce"] = n
 	headers["Content-Type"] = "application/x-www-form-urlencoded"
 
 	var intermediary json.RawMessage
@@ -589,7 +586,9 @@ func (b *Bithumb) SendAuthenticatedHTTPRequest(path string, params url.Values, r
 		bytes.NewBufferString(payload),
 		&intermediary,
 		true,
-		b.Verbose)
+		true,
+		b.Verbose,
+		b.HTTPDebugging)
 	if err != nil {
 		return err
 	}

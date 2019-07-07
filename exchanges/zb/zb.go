@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/thrasher-/gocryptotrader/currency"
@@ -22,8 +23,8 @@ import (
 )
 
 const (
-	zbTradeURL   = "http://api.zb.com/data"
-	zbMarketURL  = "https://trade.zb.com/api"
+	zbTradeURL   = "http://api.zb.cn/data"
+	zbMarketURL  = "https://trade.zb.cn/api"
 	zbAPIVersion = "v1"
 
 	zbAccountInfo                     = "getAccountInfo"
@@ -49,6 +50,7 @@ const (
 type ZB struct {
 	WebsocketConn *websocket.Conn
 	exchange.Base
+	wsRequestMtx sync.Mutex
 }
 
 // SetDefaults sets default values for the exchange
@@ -78,7 +80,12 @@ func (z *ZB) SetDefaults() {
 	z.WebsocketInit()
 	z.Websocket.Functionality = exchange.WebsocketTickerSupported |
 		exchange.WebsocketOrderbookSupported |
-		exchange.WebsocketTradeDataSupported
+		exchange.WebsocketTradeDataSupported |
+		exchange.WebsocketSubscribeSupported |
+		exchange.WebsocketAuthenticatedEndpointsSupported |
+		exchange.WebsocketAccountDataSupported |
+		exchange.WebsocketCancelOrderSupported |
+		exchange.WebsocketSubmitOrderSupported
 }
 
 // Setup sets user configuration
@@ -88,12 +95,14 @@ func (z *ZB) Setup(exch *config.ExchangeConfig) {
 	} else {
 		z.Enabled = true
 		z.AuthenticatedAPISupport = exch.AuthenticatedAPISupport
+		z.AuthenticatedWebsocketAPISupport = exch.AuthenticatedWebsocketAPISupport
 		z.SetAPIKeys(exch.APIKey, exch.APISecret, "", false)
 		z.APIAuthPEMKey = exch.APIAuthPEMKey
 		z.SetHTTPClientTimeout(exch.HTTPTimeout)
 		z.SetHTTPClientUserAgent(exch.HTTPUserAgent)
 		z.RESTPollingDelay = exch.RESTPollingDelay
 		z.Verbose = exch.Verbose
+		z.HTTPDebugging = exch.HTTPDebugging
 		z.Websocket.SetWsStatusAndConnection(exch.Websocket)
 		z.BaseCurrencies = exch.BaseCurrencies
 		z.AvailablePairs = exch.AvailablePairs
@@ -119,8 +128,11 @@ func (z *ZB) Setup(exch *config.ExchangeConfig) {
 			log.Fatal(err)
 		}
 		err = z.WebsocketSetup(z.WsConnect,
+			z.Subscribe,
+			nil,
 			exch.Name,
 			exch.Websocket,
+			exch.Verbose,
 			zbWebsocketAPI,
 			exch.WebsocketURL)
 		if err != nil {
@@ -285,8 +297,8 @@ func (z *ZB) GetOrderbook(symbol string) (OrderbookResponse, error) {
 
 	// reverse asks data
 	var data [][]float64
-	for x := len(res.Asks) - 1; x != 0; x-- {
-		data = append(data, res.Asks[x])
+	for x := len(res.Asks); x > 0; x-- {
+		data = append(data, res.Asks[x-1])
 	}
 
 	res.Asks = data
@@ -321,7 +333,7 @@ func (z *ZB) GetSpotKline(arg KlinesRequestParams) (KLineResponse, error) {
 	res.MoneyType = rawKlines["moneyType"].(string)
 
 	rawKlineDatasString, _ := json.Marshal(rawKlines["data"].([]interface{}))
-	rawKlineDatas := [][]interface{}{}
+	var rawKlineDatas [][]interface{}
 	if err := json.Unmarshal(rawKlineDatasString, &rawKlineDatas); err != nil {
 		return res, errors.New("zb rawKlines unmarshal failed")
 	}
@@ -361,7 +373,7 @@ func (z *ZB) GetCryptoAddress(currency currency.Code) (UserAddress, error) {
 
 // SendHTTPRequest sends an unauthenticated HTTP request
 func (z *ZB) SendHTTPRequest(path string, result interface{}) error {
-	return z.SendPayload(http.MethodGet, path, nil, nil, result, false, z.Verbose)
+	return z.SendPayload(http.MethodGet, path, nil, nil, result, false, false, z.Verbose, z.HTTPDebugging)
 }
 
 // SendAuthenticatedHTTPRequest sends authenticated requests to the zb API
@@ -397,7 +409,9 @@ func (z *ZB) SendAuthenticatedHTTPRequest(httpMethod string, params url.Values, 
 		strings.NewReader(""),
 		&intermediary,
 		true,
-		z.Verbose)
+		false,
+		z.Verbose,
+		z.HTTPDebugging)
 	if err != nil {
 		return err
 	}

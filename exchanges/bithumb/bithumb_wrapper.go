@@ -242,8 +242,8 @@ func (b *Bithumb) CancelAllOrders(orderCancellation *exchange.OrderCancellation)
 	cancelAllOrdersResponse := exchange.CancelAllOrdersResponse{
 		OrderStatus: make(map[string]string),
 	}
-	var allOrders []OrderData
 
+	var allOrders []OrderData
 	for _, currency := range b.GetEnabledCurrencies() {
 		orders, err := b.GetOrders("",
 			orderCancellation.Side.ToString(),
@@ -419,4 +419,26 @@ func (b *Bithumb) GetOrderHistory(getOrdersRequest *exchange.GetOrdersRequest) (
 	exchange.FilterOrdersByCurrencies(&orders, getOrdersRequest.Currencies)
 
 	return orders, nil
+}
+
+// SubscribeToWebsocketChannels appends to ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle subscribing
+func (b *Bithumb) SubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	return common.ErrFunctionNotSupported
+}
+
+// UnsubscribeToWebsocketChannels removes from ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle unsubscribing
+func (b *Bithumb) UnsubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	return common.ErrFunctionNotSupported
+}
+
+// GetSubscriptions returns a copied list of subscriptions
+func (b *Bithumb) GetSubscriptions() ([]exchange.WebsocketChannelSubscription, error) {
+	return nil, common.ErrFunctionNotSupported
+}
+
+// AuthenticateWebsocket sends an authentication message to the websocket
+func (b *Bithumb) AuthenticateWebsocket() error {
+	return common.ErrFunctionNotSupported
 }

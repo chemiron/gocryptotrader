@@ -87,6 +87,7 @@ func (y *Yobit) Setup(exch *config.ExchangeConfig) {
 		y.SetAPIKeys(exch.APIKey, exch.APISecret, "", false)
 		y.RESTPollingDelay = exch.RESTPollingDelay
 		y.Verbose = exch.Verbose
+		y.HTTPDebugging = exch.HTTPDebugging
 		y.Websocket.SetWsStatusAndConnection(exch.Websocket)
 		y.BaseCurrencies = exch.BaseCurrencies
 		y.AvailablePairs = exch.AvailablePairs
@@ -336,7 +337,9 @@ func (y *Yobit) SendHTTPRequest(path string, result interface{}) error {
 		nil,
 		result,
 		false,
-		y.Verbose)
+		false,
+		y.Verbose,
+		y.HTTPDebugging)
 }
 
 // SendAuthenticatedHTTPRequest sends an authenticated HTTP request to Yobit
@@ -350,12 +353,9 @@ func (y *Yobit) SendAuthenticatedHTTPRequest(path string, params url.Values, res
 		params = url.Values{}
 	}
 
-	if y.Nonce.Get() == 0 {
-		y.Nonce.Set(time.Now().Unix())
-	} else {
-		y.Nonce.Inc()
-	}
-	params.Set("nonce", y.Nonce.String())
+	n := y.Requester.GetNonce(false).String()
+
+	params.Set("nonce", n)
 	params.Set("method", path)
 
 	encoded := params.Encode()
@@ -381,7 +381,9 @@ func (y *Yobit) SendAuthenticatedHTTPRequest(path string, params url.Values, res
 		strings.NewReader(encoded),
 		result,
 		true,
-		y.Verbose)
+		true,
+		y.Verbose,
+		y.HTTPDebugging)
 }
 
 // GetFee returns an estimate of fee based on type of transaction

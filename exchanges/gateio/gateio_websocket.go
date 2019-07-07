@@ -1,11 +1,13 @@
 package gateio
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -13,11 +15,13 @@ import (
 	"github.com/thrasher-/gocryptotrader/currency"
 	exchange "github.com/thrasher-/gocryptotrader/exchanges"
 	"github.com/thrasher-/gocryptotrader/exchanges/orderbook"
+	log "github.com/thrasher-/gocryptotrader/logger"
 )
 
 const (
-	gateioWebsocketEndpoint = "wss://ws.gate.io/v3/"
-	gatioWsMethodPing       = "ping"
+	gateioWebsocketEndpoint  = "wss://ws.gate.io/v3/"
+	gatioWsMethodPing        = "ping"
+	gateioWebsocketRateLimit = 120 * time.Millisecond
 )
 
 // WsConnect initiates a websocket connection
@@ -42,62 +46,35 @@ func (g *Gateio) WsConnect() error {
 	if err != nil {
 		return err
 	}
-
 	go g.WsHandleData()
 
-	return g.WsSubscribe()
+	err = g.wsServerSignIn()
+	if err != nil {
+		log.Errorf("%v - authentication failed: %v", g.Name, err)
+	}
+	g.GenerateAuthenticatedSubscriptions()
+	g.GenerateDefaultSubscriptions()
+	return nil
 }
 
-// WsSubscribe subscribes to the full websocket suite on ZB exchange
-func (g *Gateio) WsSubscribe() error {
-	enabled := g.GetEnabledCurrencies()
-
-	for _, c := range enabled {
-		ticker := WebsocketRequest{
-			ID:     1337,
-			Method: "ticker.subscribe",
-			Params: []interface{}{c.String()},
-		}
-
-		err := g.WebsocketConn.WriteJSON(ticker)
-		if err != nil {
-			return err
-		}
-
-		trade := WebsocketRequest{
-			ID:     1337,
-			Method: "trades.subscribe",
-			Params: []interface{}{c.String()},
-		}
-
-		err = g.WebsocketConn.WriteJSON(trade)
-		if err != nil {
-			return err
-		}
-
-		depth := WebsocketRequest{
-			ID:     1337,
-			Method: "depth.subscribe",
-			Params: []interface{}{c.String(), 30, "0.1"},
-		}
-
-		err = g.WebsocketConn.WriteJSON(depth)
-		if err != nil {
-			return err
-		}
-
-		kline := WebsocketRequest{
-			ID:     1337,
-			Method: "kline.subscribe",
-			Params: []interface{}{c.String(), 1800},
-		}
-
-		err = g.WebsocketConn.WriteJSON(kline)
-		if err != nil {
-			return err
-		}
+func (g *Gateio) wsServerSignIn() error {
+	if !g.GetAuthenticatedAPISupport(exchange.WebsocketAuthentication) {
+		return fmt.Errorf("%v AuthenticatedWebsocketAPISupport not enabled", g.Name)
 	}
-
+	nonce := int(time.Now().Unix() * 1000)
+	sigTemp := g.GenerateSignature(strconv.Itoa(nonce))
+	signature := common.Base64Encode(sigTemp)
+	signinWsRequest := WebsocketRequest{
+		ID:     IDSignIn,
+		Method: "server.sign",
+		Params: []interface{}{g.APIKey, signature, nonce},
+	}
+	err := g.wsSend(signinWsRequest)
+	if err != nil {
+		g.Websocket.SetCanUseAuthenticatedEndpoints(false)
+		return err
+	}
+	time.Sleep(time.Second * 2) // sleep to allow server to complete sign-on if further authenticated requests are sent prior to this they will fail
 	return nil
 }
 
@@ -119,11 +96,6 @@ func (g *Gateio) WsHandleData() {
 	g.Websocket.Wg.Add(1)
 
 	defer func() {
-		err := g.WebsocketConn.Close()
-		if err != nil {
-			g.Websocket.DataHandler <- fmt.Errorf("gateio_websocket.go - Unable to to close Websocket connection. Error: %s",
-				err)
-		}
 		g.Websocket.Wg.Done()
 	}()
 
@@ -136,6 +108,8 @@ func (g *Gateio) WsHandleData() {
 			resp, err := g.WsReadData()
 			if err != nil {
 				g.Websocket.DataHandler <- err
+				// Read data error messages can overwhelm and panic the application
+				time.Sleep(time.Second)
 				continue
 			}
 
@@ -145,11 +119,59 @@ func (g *Gateio) WsHandleData() {
 				g.Websocket.DataHandler <- err
 				continue
 			}
-
 			if result.Error.Code != 0 {
-				g.Websocket.DataHandler <- fmt.Errorf("gateio_websocket.go error %s",
-					result.Error.Message)
+				if common.StringContains(result.Error.Message, "authentication") {
+					g.Websocket.DataHandler <- fmt.Errorf("%v - authentication failed: %v", g.Name, err)
+					g.Websocket.SetCanUseAuthenticatedEndpoints(false)
+
+					continue
+				}
+				g.Websocket.DataHandler <- fmt.Errorf("%v error %s",
+					g.Name, result.Error.Message)
 				continue
+			}
+
+			switch result.ID {
+			case IDSignIn:
+				g.Websocket.SetCanUseAuthenticatedEndpoints(true)
+				g.Websocket.DataHandler <- string(result.Result)
+			case IDBalance:
+				var balance WebsocketBalance
+				var balanceInterface interface{}
+				err = json.Unmarshal(result.Result, &balanceInterface)
+				if err != nil {
+					g.Websocket.DataHandler <- err
+				}
+				var p WebsocketBalanceCurrency
+				switch x := balanceInterface.(type) {
+				case map[string]interface{}:
+					for xx := range x {
+						switch kk := x[xx].(type) {
+						case map[string]interface{}:
+							p = WebsocketBalanceCurrency{
+								Currency:  xx,
+								Available: kk["available"].(string),
+								Locked:    kk["freeze"].(string),
+							}
+							balance.Currency = append(balance.Currency, p)
+						default:
+							break
+						}
+					}
+				default:
+					break
+				}
+				g.Websocket.DataHandler <- balance
+			case IDOrderQuery:
+				var orderQuery WebSocketOrderQueryResult
+				err = common.JSONDecode(result.Result, &orderQuery)
+				if err != nil {
+					g.Websocket.DataHandler <- err
+					continue
+				}
+				g.Websocket.DataHandler <- orderQuery
+			default:
+				break
 			}
 
 			switch {
@@ -322,4 +344,118 @@ func (g *Gateio) WsHandleData() {
 			}
 		}
 	}
+}
+
+// GenerateAuthenticatedSubscriptions Adds authenticated subscriptions to websocket to be handled by ManageSubscriptions()
+func (g *Gateio) GenerateAuthenticatedSubscriptions() {
+	if !g.Websocket.CanUseAuthenticatedEndpoints() {
+		return
+	}
+	var channels = []string{"balance.subscribe", "order.subscribe"}
+	var subscriptions []exchange.WebsocketChannelSubscription
+	enabledCurrencies := g.GetEnabledCurrencies()
+	for i := range channels {
+		for j := range enabledCurrencies {
+			subscriptions = append(subscriptions, exchange.WebsocketChannelSubscription{
+				Channel:  channels[i],
+				Currency: enabledCurrencies[j],
+			})
+		}
+	}
+	g.Websocket.SubscribeToChannels(subscriptions)
+}
+
+// GenerateDefaultSubscriptions Adds default subscriptions to websocket to be handled by ManageSubscriptions()
+func (g *Gateio) GenerateDefaultSubscriptions() {
+	var channels = []string{"ticker.subscribe", "trades.subscribe", "depth.subscribe", "kline.subscribe"}
+	var subscriptions []exchange.WebsocketChannelSubscription
+	enabledCurrencies := g.GetEnabledCurrencies()
+	for i := range channels {
+		for j := range enabledCurrencies {
+			params := make(map[string]interface{})
+			if strings.EqualFold(channels[i], "depth.subscribe") {
+				params["limit"] = 30
+				params["interval"] = "0.1"
+			} else if strings.EqualFold(channels[i], "kline.subscribe") {
+				params["interval"] = 1800
+			}
+			subscriptions = append(subscriptions, exchange.WebsocketChannelSubscription{
+				Channel:  channels[i],
+				Currency: enabledCurrencies[j],
+				Params:   params,
+			})
+		}
+	}
+	g.Websocket.SubscribeToChannels(subscriptions)
+}
+
+// Subscribe sends a websocket message to receive data from the channel
+func (g *Gateio) Subscribe(channelToSubscribe exchange.WebsocketChannelSubscription) error {
+	params := []interface{}{channelToSubscribe.Currency.String()}
+	for _, paramValue := range channelToSubscribe.Params {
+		params = append(params, paramValue)
+	}
+
+	subscribe := WebsocketRequest{
+		ID:     IDGeneric,
+		Method: channelToSubscribe.Channel,
+		Params: params,
+	}
+
+	if strings.EqualFold(channelToSubscribe.Channel, "balance.subscribe") {
+		subscribe.ID = IDBalance
+	}
+
+	return g.wsSend(subscribe)
+}
+
+// Unsubscribe sends a websocket message to stop receiving data from the channel
+func (g *Gateio) Unsubscribe(channelToSubscribe exchange.WebsocketChannelSubscription) error {
+	unsbuscribeText := strings.Replace(channelToSubscribe.Channel, "subscribe", "unsubscribe", 1)
+	subscribe := WebsocketRequest{
+		ID:     IDGeneric,
+		Method: unsbuscribeText,
+		Params: []interface{}{channelToSubscribe.Currency.String(), 1800},
+	}
+	return g.wsSend(subscribe)
+}
+
+func (g *Gateio) wsGetBalance() error {
+	if !g.Websocket.CanUseAuthenticatedEndpoints() {
+		return fmt.Errorf("%v not authorised to get balance", g.Name)
+	}
+	balanceWsRequest := WebsocketRequest{
+		ID:     IDBalance,
+		Method: "balance.query",
+		Params: []interface{}{},
+	}
+	return g.wsSend(balanceWsRequest)
+}
+
+func (g *Gateio) wsGetOrderInfo(market string, offset, limit int) error {
+	if !g.Websocket.CanUseAuthenticatedEndpoints() {
+		return fmt.Errorf("%v not authorised to get order info", g.Name)
+	}
+	order := WebsocketRequest{
+		ID:     IDOrderQuery,
+		Method: "order.query",
+		Params: []interface{}{
+			market,
+			offset,
+			limit,
+		},
+	}
+	return g.wsSend(order)
+}
+
+// WsSend sends data to the websocket server
+func (g *Gateio) wsSend(data interface{}) error {
+	g.wsRequestMtx.Lock()
+	defer g.wsRequestMtx.Unlock()
+	if g.Verbose {
+		log.Debugf("%v sending message to websocket %v", g.Name, data)
+	}
+	// Basic rate limiter
+	time.Sleep(gateioWebsocketRateLimit)
+	return g.WebsocketConn.WriteJSON(data)
 }

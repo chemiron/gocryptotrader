@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -48,6 +49,7 @@ type COINUT struct {
 	exchange.Base
 	WebsocketConn *websocket.Conn
 	InstrumentMap map[string]int
+	wsRequestMtx  sync.Mutex
 }
 
 // SetDefaults sets current default values
@@ -77,7 +79,12 @@ func (c *COINUT) SetDefaults() {
 	c.WebsocketInit()
 	c.Websocket.Functionality = exchange.WebsocketTickerSupported |
 		exchange.WebsocketOrderbookSupported |
-		exchange.WebsocketTradeDataSupported
+		exchange.WebsocketTradeDataSupported |
+		exchange.WebsocketSubscribeSupported |
+		exchange.WebsocketUnsubscribeSupported |
+		exchange.WebsocketAuthenticatedEndpointsSupported |
+		exchange.WebsocketSubmitOrderSupported |
+		exchange.WebsocketCancelOrderSupported
 }
 
 // Setup sets the current exchange configuration
@@ -87,11 +94,13 @@ func (c *COINUT) Setup(exch *config.ExchangeConfig) {
 	} else {
 		c.Enabled = true
 		c.AuthenticatedAPISupport = exch.AuthenticatedAPISupport
+		c.AuthenticatedWebsocketAPISupport = exch.AuthenticatedWebsocketAPISupport
 		c.SetAPIKeys(exch.APIKey, exch.APISecret, exch.ClientID, false)
 		c.SetHTTPClientTimeout(exch.HTTPTimeout)
 		c.SetHTTPClientUserAgent(exch.HTTPUserAgent)
 		c.RESTPollingDelay = exch.RESTPollingDelay
 		c.Verbose = exch.Verbose
+		c.HTTPDebugging = exch.HTTPDebugging
 		c.Websocket.SetWsStatusAndConnection(exch.Websocket)
 		c.BaseCurrencies = exch.BaseCurrencies
 		c.AvailablePairs = exch.AvailablePairs
@@ -117,8 +126,11 @@ func (c *COINUT) Setup(exch *config.ExchangeConfig) {
 			log.Fatal(err)
 		}
 		err = c.WebsocketSetup(c.WsConnect,
+			c.Subscribe,
+			c.Unsubscribe,
 			exch.Name,
 			exch.Websocket,
+			exch.Verbose,
 			coinutWebsocketURL,
 			exch.WebsocketURL)
 		if err != nil {
@@ -252,7 +264,7 @@ func (c *COINUT) CancelOrders(orders []CancelOrders) (CancelOrdersResponse, erro
 		OrderID      int `json:"order_id"`
 	}
 
-	entries := []CancelOrders{}
+	var entries []CancelOrders
 	entries = append(entries, orders...)
 	params["entries"] = entries
 
@@ -338,16 +350,12 @@ func (c *COINUT) SendHTTPRequest(apiRequest string, params map[string]interface{
 		return fmt.Errorf(exchange.WarningAuthenticatedRequestWithoutCredentialsSet, c.Name)
 	}
 
-	if c.Nonce.Get() == 0 {
-		c.Nonce.Set(time.Now().Unix())
-	} else {
-		c.Nonce.Inc()
-	}
+	n := c.Requester.GetNonce(false)
 
 	if params == nil {
 		params = map[string]interface{}{}
 	}
-	params["nonce"] = c.Nonce.Get()
+	params["nonce"] = n
 	params["request"] = apiRequest
 
 	payload, err := common.JSONEncode(params)
@@ -362,7 +370,7 @@ func (c *COINUT) SendHTTPRequest(apiRequest string, params map[string]interface{
 	headers := make(map[string]string)
 	if authenticated {
 		headers["X-USER"] = c.ClientID
-		hmac := common.GetHMAC(common.HashSHA256, payload, []byte(c.APISecret))
+		hmac := common.GetHMAC(common.HashSHA256, payload, []byte(c.APIKey))
 		headers["X-SIGNATURE"] = common.HexEncodeToString(hmac)
 	}
 	headers["Content-Type"] = "application/json"
@@ -374,7 +382,10 @@ func (c *COINUT) SendHTTPRequest(apiRequest string, params map[string]interface{
 		bytes.NewBuffer(payload),
 		&rawMsg,
 		authenticated,
-		c.Verbose)
+		true,
+		c.Verbose,
+		c.HTTPDebugging,
+	)
 	if err != nil {
 		return err
 	}

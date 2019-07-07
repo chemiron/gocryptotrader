@@ -291,9 +291,7 @@ func (h *HUOBIHADAX) CancelOrder(order *exchange.OrderCancellation) error {
 
 // CancelAllOrders cancels all orders associated with a currency pair
 func (h *HUOBIHADAX) CancelAllOrders(orderCancellation *exchange.OrderCancellation) (exchange.CancelAllOrdersResponse, error) {
-	cancelAllOrdersResponse := exchange.CancelAllOrdersResponse{
-		OrderStatus: make(map[string]string),
-	}
+	var cancelAllOrdersResponse exchange.CancelAllOrdersResponse
 	for _, currency := range h.GetEnabledCurrencies() {
 		resp, err := h.CancelOpenOrdersBatch(orderCancellation.AccountID, exchange.FormatExchangeCurrency(h.Name, currency).String())
 		if err != nil {
@@ -385,7 +383,7 @@ func (h *HUOBIHADAX) GetActiveOrders(getOrdersRequest *exchange.GetOrdersRequest
 	for i := range allOrders {
 		symbol := currency.NewPairDelimiter(allOrders[i].Symbol,
 			h.ConfigCurrencyPairFormat.Delimiter)
-		orderDate := time.Unix(allOrders[i].CreatedAt, 0)
+		orderDate := time.Unix(0, allOrders[i].CreatedAt*int64(time.Millisecond))
 
 		orders = append(orders, exchange.OrderDetail{
 			ID:              fmt.Sprintf("%v", allOrders[i].ID),
@@ -433,7 +431,7 @@ func (h *HUOBIHADAX) GetOrderHistory(getOrdersRequest *exchange.GetOrdersRequest
 	for i := range allOrders {
 		symbol := currency.NewPairDelimiter(allOrders[i].Symbol,
 			h.ConfigCurrencyPairFormat.Delimiter)
-		orderDate := time.Unix(allOrders[i].CreatedAt, 0)
+		orderDate := time.Unix(0, allOrders[i].CreatedAt*int64(time.Millisecond))
 
 		orders = append(orders, exchange.OrderDetail{
 			ID:           fmt.Sprintf("%v", allOrders[i].ID),
@@ -449,4 +447,28 @@ func (h *HUOBIHADAX) GetOrderHistory(getOrdersRequest *exchange.GetOrdersRequest
 		getOrdersRequest.EndTicks)
 
 	return orders, nil
+}
+
+// SubscribeToWebsocketChannels appends to ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle subscribing
+func (h *HUOBIHADAX) SubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	h.Websocket.SubscribeToChannels(channels)
+	return nil
+}
+
+// UnsubscribeToWebsocketChannels removes from ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle unsubscribing
+func (h *HUOBIHADAX) UnsubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	h.Websocket.UnsubscribeToChannels(channels)
+	return nil
+}
+
+// GetSubscriptions returns a copied list of subscriptions
+func (h *HUOBIHADAX) GetSubscriptions() ([]exchange.WebsocketChannelSubscription, error) {
+	return h.Websocket.GetSubscriptions(), nil
+}
+
+// AuthenticateWebsocket sends an authentication message to the websocket
+func (h *HUOBIHADAX) AuthenticateWebsocket() error {
+	return h.wsLogin()
 }

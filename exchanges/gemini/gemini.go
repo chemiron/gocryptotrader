@@ -123,7 +123,8 @@ func (g *Gemini) SetDefaults() {
 	g.APIUrl = g.APIUrlDefault
 	g.WebsocketInit()
 	g.Websocket.Functionality = exchange.WebsocketOrderbookSupported |
-		exchange.WebsocketTradeDataSupported
+		exchange.WebsocketTradeDataSupported |
+		exchange.WebsocketAuthenticatedEndpointsSupported
 }
 
 // Setup sets exchange configuration parameters
@@ -133,15 +134,17 @@ func (g *Gemini) Setup(exch *config.ExchangeConfig) {
 	} else {
 		g.Enabled = true
 		g.AuthenticatedAPISupport = exch.AuthenticatedAPISupport
+		g.AuthenticatedWebsocketAPISupport = exch.AuthenticatedWebsocketAPISupport
 		g.SetAPIKeys(exch.APIKey, exch.APISecret, "", false)
 		g.SetHTTPClientTimeout(exch.HTTPTimeout)
 		g.SetHTTPClientUserAgent(exch.HTTPUserAgent)
 		g.RESTPollingDelay = exch.RESTPollingDelay
 		g.Verbose = exch.Verbose
+		g.HTTPDebugging = exch.HTTPDebugging
 		g.BaseCurrencies = exch.BaseCurrencies
 		g.AvailablePairs = exch.AvailablePairs
 		g.EnabledPairs = exch.EnabledPairs
-
+		g.WebsocketURL = geminiWebsocketEndpoint
 		err := g.SetCurrencyPairFormat()
 		if err != nil {
 			log.Fatal(err)
@@ -160,16 +163,20 @@ func (g *Gemini) Setup(exch *config.ExchangeConfig) {
 		}
 		if exch.UseSandbox {
 			g.APIUrl = geminiSandboxAPIURL
+			g.WebsocketURL = geminiWebsocketSandboxEndpoint
 		}
 		err = g.SetClientProxyAddress(exch.ProxyAddress)
 		if err != nil {
 			log.Fatal(err)
 		}
 		err = g.WebsocketSetup(g.WsConnect,
+			nil,
+			nil,
 			exch.Name,
 			exch.Websocket,
-			geminiWebsocketEndpoint,
-			exch.WebsocketURL)
+			exch.Verbose,
+			g.WebsocketURL,
+			g.WebsocketURL)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -178,7 +185,7 @@ func (g *Gemini) Setup(exch *config.ExchangeConfig) {
 
 // GetSymbols returns all available symbols for trading
 func (g *Gemini) GetSymbols() ([]string, error) {
-	symbols := []string{}
+	var symbols []string
 	path := fmt.Sprintf("%s/v%s/%s", g.APIUrl, geminiAPIVersion, geminiSymbols)
 
 	return symbols, g.SendHTTPRequest(path, &symbols)
@@ -255,7 +262,7 @@ func (g *Gemini) GetOrderbook(currencyPair string, params url.Values) (Orderbook
 // default. Can be '1' or 'true' to activate
 func (g *Gemini) GetTrades(currencyPair string, params url.Values) ([]Trade, error) {
 	path := common.EncodeURLValues(fmt.Sprintf("%s/v%s/%s/%s", g.APIUrl, geminiAPIVersion, geminiTrades, currencyPair), params)
-	trades := []Trade{}
+	var trades []Trade
 
 	return trades, g.SendHTTPRequest(path, &trades)
 }
@@ -281,7 +288,7 @@ func (g *Gemini) GetAuction(currencyPair string) (Auction, error) {
 // indicative prices and quantities.
 func (g *Gemini) GetAuctionHistory(currencyPair string, params url.Values) ([]AuctionHistory, error) {
 	path := common.EncodeURLValues(fmt.Sprintf("%s/v%s/%s/%s/%s", g.APIUrl, geminiAPIVersion, geminiAuction, currencyPair, geminiAuctionHistory), params)
-	auctionHist := []AuctionHistory{}
+	var auctionHist []AuctionHistory
 
 	return auctionHist, g.SendHTTPRequest(path, &auctionHist)
 }
@@ -338,12 +345,12 @@ func (g *Gemini) CancelExistingOrder(orderID int64) (Order, error) {
 // the UI. If sessions = true will only cancel the order that is called on this
 // session asssociated with the APIKEY
 func (g *Gemini) CancelExistingOrders(cancelBySession bool) (OrderResult, error) {
-	response := OrderResult{}
 	path := geminiOrderCancelAll
 	if cancelBySession {
 		path = geminiOrderCancelSession
 	}
 
+	var response OrderResult
 	err := g.SendAuthenticatedHTTPRequest(http.MethodPost, path, nil, &response)
 	if err != nil {
 		return response, err
@@ -397,7 +404,7 @@ func (g *Gemini) GetOrders() ([]Order, error) {
 // currencyPair - example "btcusd"
 // timestamp - [optional] Only return trades on or after this timestamp.
 func (g *Gemini) GetTradeHistory(currencyPair string, timestamp int64) ([]TradeHistory, error) {
-	response := []TradeHistory{}
+	var response []TradeHistory
 	req := make(map[string]interface{})
 	req["symbol"] = currencyPair
 
@@ -419,7 +426,7 @@ func (g *Gemini) GetNotionalVolume() (NotionalVolume, error) {
 
 // GetTradeVolume returns a multi-arrayed volume response
 func (g *Gemini) GetTradeVolume() ([][]TradeVolume, error) {
-	response := [][]TradeVolume{}
+	var response [][]TradeVolume
 
 	return response,
 		g.SendAuthenticatedHTTPRequest(http.MethodPost, geminiTradeVolume, nil, &response)
@@ -427,7 +434,7 @@ func (g *Gemini) GetTradeVolume() ([][]TradeVolume, error) {
 
 // GetBalances returns available balances in the supported currencies
 func (g *Gemini) GetBalances() ([]Balance, error) {
-	response := []Balance{}
+	var response []Balance
 
 	return response,
 		g.SendAuthenticatedHTTPRequest(http.MethodPost, geminiBalances, nil, &response)
@@ -490,7 +497,7 @@ func (g *Gemini) PostHeartbeat() (string, error) {
 
 // SendHTTPRequest sends an unauthenticated request
 func (g *Gemini) SendHTTPRequest(path string, result interface{}) error {
-	return g.SendPayload(http.MethodGet, path, nil, nil, result, false, g.Verbose)
+	return g.SendPayload(http.MethodGet, path, nil, nil, result, false, false, g.Verbose, g.HTTPDebugging)
 }
 
 // SendAuthenticatedHTTPRequest sends an authenticated HTTP request to the
@@ -503,7 +510,7 @@ func (g *Gemini) SendAuthenticatedHTTPRequest(method, path string, params map[st
 	headers := make(map[string]string)
 	req := make(map[string]interface{})
 	req["request"] = fmt.Sprintf("/v%s/%s", geminiAPIVersion, path)
-	req["nonce"] = g.Nonce.GetValue(g.Name, false)
+	req["nonce"] = g.Requester.GetNonce(true).String()
 
 	for key, value := range params {
 		req[key] = value
@@ -528,7 +535,7 @@ func (g *Gemini) SendAuthenticatedHTTPRequest(method, path string, params map[st
 	headers["X-GEMINI-SIGNATURE"] = common.HexEncodeToString(hmac)
 	headers["Cache-Control"] = "no-cache"
 
-	return g.SendPayload(method, g.APIUrl+"/v1/"+path, headers, strings.NewReader(""), result, true, g.Verbose)
+	return g.SendPayload(method, g.APIUrl+"/v1/"+path, headers, strings.NewReader(""), result, true, false, g.Verbose, g.HTTPDebugging)
 }
 
 // GetFee returns an estimate of fee based on type of transaction

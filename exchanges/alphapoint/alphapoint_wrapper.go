@@ -170,7 +170,8 @@ func (a *Alphapoint) CancelOrder(order *exchange.OrderCancellation) error {
 
 // CancelAllOrders cancels all orders for a given account
 func (a *Alphapoint) CancelAllOrders(orderCancellation *exchange.OrderCancellation) (exchange.CancelAllOrdersResponse, error) {
-	return exchange.CancelAllOrdersResponse{}, a.CancelAllExistingOrders(orderCancellation.AccountID)
+	return exchange.CancelAllOrdersResponse{},
+		a.CancelAllExistingOrders(orderCancellation.AccountID)
 }
 
 // GetOrderInfo returns information on a current open order
@@ -315,4 +316,26 @@ func (a *Alphapoint) GetOrderHistory(getOrdersRequest *exchange.GetOrdersRequest
 	exchange.FilterOrdersByTickRange(&orders, getOrdersRequest.StartTicks, getOrdersRequest.EndTicks)
 
 	return orders, nil
+}
+
+// SubscribeToWebsocketChannels appends to ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle subscribing
+func (a *Alphapoint) SubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	return common.ErrFunctionNotSupported
+}
+
+// UnsubscribeToWebsocketChannels removes from ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle unsubscribing
+func (a *Alphapoint) UnsubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	return common.ErrFunctionNotSupported
+}
+
+// GetSubscriptions returns a copied list of subscriptions
+func (a *Alphapoint) GetSubscriptions() ([]exchange.WebsocketChannelSubscription, error) {
+	return nil, common.ErrFunctionNotSupported
+}
+
+// AuthenticateWebsocket sends an authentication message to the websocket
+func (a *Alphapoint) AuthenticateWebsocket() error {
+	return common.ErrFunctionNotSupported
 }

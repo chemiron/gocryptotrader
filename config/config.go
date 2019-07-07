@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/thrasher-/gocryptotrader/common"
+	"github.com/thrasher-/gocryptotrader/connchecker"
 	"github.com/thrasher-/gocryptotrader/currency"
 	"github.com/thrasher-/gocryptotrader/currency/forexprovider"
 	"github.com/thrasher-/gocryptotrader/currency/forexprovider/base"
@@ -42,7 +43,7 @@ const (
 // Constants here hold some messages
 const (
 	ErrExchangeNameEmpty                       = "exchange #%d name is empty"
-	ErrExchangeAvailablePairsEmpty             = "exchange %s avaiable pairs is emtpy"
+	ErrExchangeAvailablePairsEmpty             = "exchange %s avaiable pairs is empty"
 	ErrExchangeEnabledPairsEmpty               = "exchange %s enabled pairs is empty"
 	ErrExchangeBaseCurrenciesEmpty             = "exchange %s base currencies is empty"
 	ErrExchangeNotFound                        = "exchange %s not found"
@@ -104,18 +105,19 @@ type CurrencyPairFormatConfig struct {
 // prestart management of Portfolio, Communications, Webserver and Enabled
 // Exchanges
 type Config struct {
-	Name              string               `json:"name"`
-	EncryptConfig     int                  `json:"encryptConfig"`
-	GlobalHTTPTimeout time.Duration        `json:"globalHTTPTimeout"`
-	Logging           log.Logging          `json:"logging"`
-	Profiler          ProfilerConfig       `json:"profiler"`
-	NTPClient         NTPClientConfig      `json:"ntpclient"`
-	Currency          CurrencyConfig       `json:"currencyConfig"`
-	Communications    CommunicationsConfig `json:"communications"`
-	Portfolio         portfolio.Base       `json:"portfolioAddresses"`
-	Webserver         WebserverConfig      `json:"webserver"`
-	Exchanges         []ExchangeConfig     `json:"exchanges"`
-	BankAccounts      []BankAccount        `json:"bankAccounts"`
+	Name              string                  `json:"name"`
+	EncryptConfig     int                     `json:"encryptConfig"`
+	GlobalHTTPTimeout time.Duration           `json:"globalHTTPTimeout"`
+	Logging           log.Logging             `json:"logging"`
+	Profiler          ProfilerConfig          `json:"profiler"`
+	NTPClient         NTPClientConfig         `json:"ntpclient"`
+	Currency          CurrencyConfig          `json:"currencyConfig"`
+	Communications    CommunicationsConfig    `json:"communications"`
+	Portfolio         portfolio.Base          `json:"portfolioAddresses"`
+	Webserver         WebserverConfig         `json:"webserver"`
+	Exchanges         []ExchangeConfig        `json:"exchanges"`
+	BankAccounts      []BankAccount           `json:"bankAccounts"`
+	ConnectionMonitor ConnectionMonitorConfig `json:"connectionMonitor"`
 
 	// Deprecated config settings, will be removed at a future date
 	CurrencyPairFormat  *CurrencyPairFormatConfig `json:"currencyPairFormat,omitempty"`
@@ -124,10 +126,21 @@ type Config struct {
 	SMS                 *SMSGlobalConfig          `json:"smsGlobal,omitempty"`
 }
 
+// ConnectionMonitorConfig defines the connection monitor variables to ensure
+// that there is internet connectivity
+type ConnectionMonitorConfig struct {
+	DNSList          []string      `json:"preferredDNSList"`
+	PublicDomainList []string      `json:"preferredDomainList"`
+	CheckInterval    time.Duration `json:"checkInterval"`
+}
+
+// ProfilerConfig defines the profiler configuration to enable pprof
 type ProfilerConfig struct {
 	Enabled bool `json:"enabled"`
 }
 
+// NTPClientConfig defines a network time protocol configuration to allow for
+// positive and negative differences
 type NTPClientConfig struct {
 	Level                     int            `json:"enabled"`
 	Pool                      []string       `json:"pool"`
@@ -137,33 +150,35 @@ type NTPClientConfig struct {
 
 // ExchangeConfig holds all the information needed for each enabled Exchange.
 type ExchangeConfig struct {
-	Name                      string                    `json:"name"`
-	Enabled                   bool                      `json:"enabled"`
-	Verbose                   bool                      `json:"verbose"`
-	Websocket                 bool                      `json:"websocket"`
-	UseSandbox                bool                      `json:"useSandbox"`
-	RESTPollingDelay          time.Duration             `json:"restPollingDelay"`
-	HTTPTimeout               time.Duration             `json:"httpTimeout"`
-	HTTPUserAgent             string                    `json:"httpUserAgent"`
-	AuthenticatedAPISupport   bool                      `json:"authenticatedApiSupport"`
-	APIKey                    string                    `json:"apiKey"`
-	APISecret                 string                    `json:"apiSecret"`
-	APIAuthPEMKeySupport      bool                      `json:"apiAuthPemKeySupport,omitempty"`
-	APIAuthPEMKey             string                    `json:"apiAuthPemKey,omitempty"`
-	APIURL                    string                    `json:"apiUrl"`
-	APIURLSecondary           string                    `json:"apiUrlSecondary"`
-	ProxyAddress              string                    `json:"proxyAddress"`
-	WebsocketURL              string                    `json:"websocketUrl"`
-	ClientID                  string                    `json:"clientId,omitempty"`
-	AvailablePairs            currency.Pairs            `json:"availablePairs"`
-	EnabledPairs              currency.Pairs            `json:"enabledPairs"`
-	BaseCurrencies            currency.Currencies       `json:"baseCurrencies"`
-	AssetTypes                string                    `json:"assetTypes"`
-	SupportsAutoPairUpdates   bool                      `json:"supportsAutoPairUpdates"`
-	PairsLastUpdated          int64                     `json:"pairsLastUpdated,omitempty"`
-	ConfigCurrencyPairFormat  *CurrencyPairFormatConfig `json:"configCurrencyPairFormat"`
-	RequestCurrencyPairFormat *CurrencyPairFormatConfig `json:"requestCurrencyPairFormat"`
-	BankAccounts              []BankAccount             `json:"bankAccounts"`
+	Name                             string                    `json:"name"`
+	Enabled                          bool                      `json:"enabled"`
+	Verbose                          bool                      `json:"verbose"`
+	Websocket                        bool                      `json:"websocket"`
+	UseSandbox                       bool                      `json:"useSandbox"`
+	RESTPollingDelay                 time.Duration             `json:"restPollingDelay"`
+	HTTPTimeout                      time.Duration             `json:"httpTimeout"`
+	HTTPUserAgent                    string                    `json:"httpUserAgent"`
+	HTTPDebugging                    bool                      `json:"httpDebugging"`
+	AuthenticatedAPISupport          bool                      `json:"authenticatedApiSupport"`
+	AuthenticatedWebsocketAPISupport bool                      `json:"authenticatedWebsocketApiSupport"`
+	APIKey                           string                    `json:"apiKey"`
+	APISecret                        string                    `json:"apiSecret"`
+	APIAuthPEMKeySupport             bool                      `json:"apiAuthPemKeySupport,omitempty"`
+	APIAuthPEMKey                    string                    `json:"apiAuthPemKey,omitempty"`
+	APIURL                           string                    `json:"apiUrl"`
+	APIURLSecondary                  string                    `json:"apiUrlSecondary"`
+	ProxyAddress                     string                    `json:"proxyAddress"`
+	WebsocketURL                     string                    `json:"websocketUrl"`
+	ClientID                         string                    `json:"clientId,omitempty"`
+	AvailablePairs                   currency.Pairs            `json:"availablePairs"`
+	EnabledPairs                     currency.Pairs            `json:"enabledPairs"`
+	BaseCurrencies                   currency.Currencies       `json:"baseCurrencies"`
+	AssetTypes                       string                    `json:"assetTypes"`
+	SupportsAutoPairUpdates          bool                      `json:"supportsAutoPairUpdates"`
+	PairsLastUpdated                 int64                     `json:"pairsLastUpdated,omitempty"`
+	ConfigCurrencyPairFormat         *CurrencyPairFormatConfig `json:"configCurrencyPairFormat"`
+	RequestCurrencyPairFormat        *CurrencyPairFormatConfig `json:"requestCurrencyPairFormat"`
+	BankAccounts                     []BankAccount             `json:"bankAccounts"`
 }
 
 // BankAccount holds differing bank account details by supported funding
@@ -784,19 +799,18 @@ func (c *Config) CheckExchangeConfigValues() error {
 			if len(c.Exchanges[i].BaseCurrencies) == 0 {
 				return fmt.Errorf(ErrExchangeBaseCurrenciesEmpty, c.Exchanges[i].Name)
 			}
-			if c.Exchanges[i].AuthenticatedAPISupport { // non-fatal error
-				if c.Exchanges[i].APIKey == "" || c.Exchanges[i].APISecret == "" ||
-					c.Exchanges[i].APIKey == DefaultUnsetAPIKey ||
-					c.Exchanges[i].APISecret == DefaultUnsetAPISecret {
-					c.Exchanges[i].AuthenticatedAPISupport = false
-					log.Warnf(WarningExchangeAuthAPIDefaultOrEmptyValues, c.Exchanges[i].Name)
-				} else if c.Exchanges[i].Name == "ITBIT" || c.Exchanges[i].Name == "Bitstamp" || c.Exchanges[i].Name == "COINUT" || c.Exchanges[i].Name == "CoinbasePro" {
-					if c.Exchanges[i].ClientID == "" || c.Exchanges[i].ClientID == "ClientID" {
-						c.Exchanges[i].AuthenticatedAPISupport = false
-						log.Warnf(WarningExchangeAuthAPIDefaultOrEmptyValues, c.Exchanges[i].Name)
-					}
-				}
+
+			var areAuthenticatedCredentialsValid bool
+			if c.Exchanges[i].AuthenticatedWebsocketAPISupport || c.Exchanges[i].AuthenticatedAPISupport {
+				areAuthenticatedCredentialsValid = c.areAuthenticatedCredentialsValid(i)
 			}
+			if c.Exchanges[i].AuthenticatedWebsocketAPISupport {
+				c.Exchanges[i].AuthenticatedWebsocketAPISupport = areAuthenticatedCredentialsValid
+			}
+			if c.Exchanges[i].AuthenticatedAPISupport {
+				c.Exchanges[i].AuthenticatedAPISupport = areAuthenticatedCredentialsValid
+			}
+
 			if !c.Exchanges[i].SupportsAutoPairUpdates {
 				lastUpdated := common.UnixTimestampToTime(c.Exchanges[i].PairsLastUpdated)
 				lastUpdated = lastUpdated.AddDate(0, 0, configPairsLastUpdatedWarningThreshold)
@@ -855,6 +869,37 @@ func (c *Config) CheckExchangeConfigValues() error {
 		return errors.New(ErrNoEnabledExchanges)
 	}
 	return nil
+}
+
+func (c *Config) areAuthenticatedCredentialsValid(i int) bool {
+	if c.Exchanges == nil {
+		log.Error("Config: Failed to check exchange authenticated credentials due to c.Exchanges not setup")
+		return false
+	}
+	if i < 0 || c.Exchanges == nil || len(c.Exchanges) < i {
+		log.Error("Config: Failed to check exchange authenticated credentials due to invalid index")
+		return false
+	}
+
+	resp := true
+	if c.Exchanges[i].APIKey == "" || c.Exchanges[i].APIKey == DefaultUnsetAPIKey {
+		resp = false
+	}
+
+	if (c.Exchanges[i].APISecret == "" || c.Exchanges[i].APISecret == DefaultUnsetAPISecret) &&
+		c.Exchanges[i].Name != "COINUT" {
+		resp = false
+	}
+
+	if (c.Exchanges[i].ClientID == "ClientID" || c.Exchanges[i].ClientID == "") &&
+		(c.Exchanges[i].Name == "ITBIT" || c.Exchanges[i].Name == "Bitstamp" || c.Exchanges[i].Name == "COINUT" || c.Exchanges[i].Name == "CoinbasePro") {
+		resp = false
+	}
+	// non-fatal error
+	if !resp {
+		log.Warnf(WarningExchangeAuthAPIDefaultOrEmptyValues, c.Exchanges[i].Name)
+	}
+	return resp
 }
 
 // CheckWebserverConfigValues checks information before webserver starts and
@@ -1089,7 +1134,7 @@ func (c *Config) CheckLoggerConfig() error {
 	}
 
 	if len(c.Logging.File) > 0 {
-		logPath := path.Join(common.GetDefaultDataDir(runtime.GOOS), "logs")
+		logPath := filepath.Join(common.GetDefaultDataDir(runtime.GOOS), "logs")
 		err := common.CreateDir(logPath)
 		if err != nil {
 			return err
@@ -1099,7 +1144,7 @@ func (c *Config) CheckLoggerConfig() error {
 	return nil
 }
 
-// CheckNTPConfig() checks for missing or incorrectly configured NTPClient and recreates with known safe defaults
+// CheckNTPConfig checks for missing or incorrectly configured NTPClient and recreates with known safe defaults
 func (c *Config) CheckNTPConfig() {
 	m.Lock()
 	defer m.Unlock()
@@ -1120,7 +1165,7 @@ func (c *Config) CheckNTPConfig() {
 	}
 }
 
-// DisableNTPCheck() allows the user to change how they are prompted for timesync alerts
+// DisableNTPCheck allows the user to change how they are prompted for timesync alerts
 func (c *Config) DisableNTPCheck(input io.Reader) (string, error) {
 	m.Lock()
 	defer m.Unlock()
@@ -1155,6 +1200,24 @@ func (c *Config) DisableNTPCheck(input io.Reader) (string, error) {
 	return "", errors.New("something went wrong NTPCheck should never make it this far")
 }
 
+// CheckConnectionMonitorConfig checks and if zero value assigns default values
+func (c *Config) CheckConnectionMonitorConfig() {
+	m.Lock()
+	defer m.Unlock()
+
+	if c.ConnectionMonitor.CheckInterval == 0 {
+		c.ConnectionMonitor.CheckInterval = connchecker.DefaultCheckInterval
+	}
+
+	if len(c.ConnectionMonitor.DNSList) == 0 {
+		c.ConnectionMonitor.DNSList = connchecker.DefaultDNSList
+	}
+
+	if len(c.ConnectionMonitor.PublicDomainList) == 0 {
+		c.ConnectionMonitor.PublicDomainList = connchecker.DefaultDomainList
+	}
+}
+
 // GetFilePath returns the desired config file or the default config file name
 // based on if the application is being run under test or normal mode.
 func GetFilePath(file string) (string, error) {
@@ -1186,20 +1249,19 @@ func GetFilePath(file string) (string, error) {
 		_, err := os.Stat(oldDirs[x])
 		if os.IsNotExist(err) {
 			continue
-		} else {
-			if path.Ext(oldDirs[x]) == ".json" {
-				err = os.Rename(oldDirs[x], newDirs[0])
-				if err != nil {
-					return "", err
-				}
-				log.Debugf("Renamed old config file %s to %s", oldDirs[x], newDirs[0])
-			} else {
-				err = os.Rename(oldDirs[x], newDirs[1])
-				if err != nil {
-					return "", err
-				}
-				log.Debugf("Renamed old config file %s to %s", oldDirs[x], newDirs[1])
+		}
+		if filepath.Ext(oldDirs[x]) == ".json" {
+			err = os.Rename(oldDirs[x], newDirs[0])
+			if err != nil {
+				return "", err
 			}
+			log.Debugf("Renamed old config file %s to %s", oldDirs[x], newDirs[0])
+		} else {
+			err = os.Rename(oldDirs[x], newDirs[1])
+			if err != nil {
+				return "", err
+			}
+			log.Debugf("Renamed old config file %s to %s", oldDirs[x], newDirs[1])
 		}
 	}
 
@@ -1216,7 +1278,7 @@ func GetFilePath(file string) (string, error) {
 		}
 
 		if ConfirmECS(data) {
-			if path.Ext(newDirs[x]) == ".dat" {
+			if filepath.Ext(newDirs[x]) == ".dat" {
 				return newDirs[x], nil
 			}
 
@@ -1227,7 +1289,7 @@ func GetFilePath(file string) (string, error) {
 			return newDirs[1], nil
 		}
 
-		if path.Ext(newDirs[x]) == ".json" {
+		if filepath.Ext(newDirs[x]) == ".json" {
 			return newDirs[x], nil
 		}
 
@@ -1348,6 +1410,7 @@ func (c *Config) CheckConfig() error {
 		return fmt.Errorf(ErrCheckingConfigValues, err)
 	}
 
+	c.CheckConnectionMonitorConfig()
 	c.CheckCommunicationsConfig()
 
 	if c.Webserver.Enabled {

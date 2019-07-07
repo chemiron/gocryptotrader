@@ -251,12 +251,10 @@ func (k *Kraken) CancelAllOrders(_ *exchange.OrderCancellation) (exchange.Cancel
 		return cancelAllOrdersResponse, err
 	}
 
-	if openOrders.Count > 0 {
-		for orderID := range openOrders.Open {
-			_, err = k.CancelExistingOrder(orderID)
-			if err != nil {
-				cancelAllOrdersResponse.OrderStatus[orderID] = err.Error()
-			}
+	for orderID := range openOrders.Open {
+		_, err = k.CancelExistingOrder(orderID)
+		if err != nil {
+			cancelAllOrdersResponse.OrderStatus[orderID] = err.Error()
 		}
 	}
 
@@ -395,4 +393,28 @@ func (k *Kraken) GetOrderHistory(getOrdersRequest *exchange.GetOrdersRequest) ([
 	exchange.FilterOrdersByCurrencies(&orders, getOrdersRequest.Currencies)
 
 	return orders, nil
+}
+
+// SubscribeToWebsocketChannels appends to ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle subscribing
+func (k *Kraken) SubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	k.Websocket.SubscribeToChannels(channels)
+	return nil
+}
+
+// UnsubscribeToWebsocketChannels removes from ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle unsubscribing
+func (k *Kraken) UnsubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	k.Websocket.UnsubscribeToChannels(channels)
+	return nil
+}
+
+// GetSubscriptions returns a copied list of subscriptions
+func (k *Kraken) GetSubscriptions() ([]exchange.WebsocketChannelSubscription, error) {
+	return k.Websocket.GetSubscriptions(), nil
+}
+
+// AuthenticateWebsocket sends an authentication message to the websocket
+func (k *Kraken) AuthenticateWebsocket() error {
+	return common.ErrFunctionNotSupported
 }

@@ -82,6 +82,7 @@ func (e *EXMO) Setup(exch *config.ExchangeConfig) {
 		e.SetEnabled(false)
 	} else {
 		e.Enabled = true
+		e.HTTPDebugging = exch.HTTPDebugging
 		e.AuthenticatedAPISupport = exch.AuthenticatedAPISupport
 		e.SetAPIKeys(exch.APIKey, exch.APISecret, "", false)
 		e.SetHTTPClientTimeout(exch.HTTPTimeout)
@@ -154,7 +155,7 @@ func (e *EXMO) GetPairSettings() (map[string]PairSettings, error) {
 
 // GetCurrency returns a list of currencies
 func (e *EXMO) GetCurrency() ([]string, error) {
-	result := []string{}
+	var result []string
 	urlPath := fmt.Sprintf("%s/v%s/%s", e.APIUrl, exmoAPIVersion, exmoCurrency)
 	return result, e.SendHTTPRequest(urlPath, &result)
 }
@@ -371,7 +372,7 @@ func (e *EXMO) GetWalletHistory(date int64) (WalletHistory, error) {
 
 // SendHTTPRequest sends an unauthenticated HTTP request
 func (e *EXMO) SendHTTPRequest(path string, result interface{}) error {
-	return e.SendPayload(http.MethodGet, path, nil, nil, result, false, e.Verbose)
+	return e.SendPayload(http.MethodGet, path, nil, nil, result, false, false, e.Verbose, e.HTTPDebugging)
 }
 
 // SendAuthenticatedHTTPRequest sends an authenticated HTTP request
@@ -381,12 +382,8 @@ func (e *EXMO) SendAuthenticatedHTTPRequest(method, endpoint string, vals url.Va
 			e.Name)
 	}
 
-	if e.Nonce.Get() == 0 {
-		e.Nonce.Set(time.Now().UnixNano())
-	} else {
-		e.Nonce.Inc()
-	}
-	vals.Set("nonce", e.Nonce.String())
+	n := e.Requester.GetNonce(true).String()
+	vals.Set("nonce", n)
 
 	payload := vals.Encode()
 	hash := common.GetHMAC(common.HashSHA512,
@@ -413,7 +410,9 @@ func (e *EXMO) SendAuthenticatedHTTPRequest(method, endpoint string, vals url.Va
 		strings.NewReader(payload),
 		result,
 		true,
-		e.Verbose)
+		true,
+		e.Verbose,
+		e.HTTPDebugging)
 }
 
 // GetFee returns an estimate of fee based on type of transaction

@@ -357,3 +357,25 @@ func (g *Gemini) GetOrderHistory(getOrdersRequest *exchange.GetOrdersRequest) ([
 
 	return orders, nil
 }
+
+// SubscribeToWebsocketChannels appends to ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle subscribing
+func (g *Gemini) SubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	return common.ErrFunctionNotSupported
+}
+
+// UnsubscribeToWebsocketChannels removes from ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle unsubscribing
+func (g *Gemini) UnsubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	return common.ErrFunctionNotSupported
+}
+
+// GetSubscriptions returns a copied list of subscriptions
+func (g *Gemini) GetSubscriptions() ([]exchange.WebsocketChannelSubscription, error) {
+	return nil, common.ErrFunctionNotSupported
+}
+
+// AuthenticateWebsocket sends an authentication message to the websocket
+func (g *Gemini) AuthenticateWebsocket() error {
+	return common.ErrFunctionNotSupported
+}

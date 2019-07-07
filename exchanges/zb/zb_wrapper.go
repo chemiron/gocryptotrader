@@ -239,7 +239,6 @@ func (z *ZB) CancelAllOrders(_ *exchange.OrderCancellation) (exchange.CancelAllO
 	}
 	var allOpenOrders []Order
 	for _, currency := range z.GetEnabledCurrencies() {
-		var pageNumber int64
 		// Limiting to 10 pages
 		for i := 0; i < 10; i++ {
 			openOrders, err := z.GetUnfinishedOrdersIgnoreTradeType(exchange.FormatExchangeCurrency(z.Name, currency).String(), 1, 10)
@@ -252,7 +251,6 @@ func (z *ZB) CancelAllOrders(_ *exchange.OrderCancellation) (exchange.CancelAllO
 			}
 
 			allOpenOrders = append(allOpenOrders, openOrders...)
-			pageNumber++
 		}
 	}
 
@@ -346,7 +344,7 @@ func (z *ZB) GetActiveOrders(getOrdersRequest *exchange.GetOrdersRequest) ([]exc
 			Amount:       order.TotalAmount,
 			Exchange:     z.Name,
 			OrderDate:    orderDate,
-			Price:        float64(order.Price),
+			Price:        order.Price,
 			OrderSide:    orderSide,
 			CurrencyPair: symbol,
 		})
@@ -403,7 +401,7 @@ func (z *ZB) GetOrderHistory(getOrdersRequest *exchange.GetOrdersRequest) ([]exc
 			Amount:       order.TotalAmount,
 			Exchange:     z.Name,
 			OrderDate:    orderDate,
-			Price:        float64(order.Price),
+			Price:        order.Price,
 			OrderSide:    orderSide,
 			CurrencyPair: symbol,
 		})
@@ -412,4 +410,27 @@ func (z *ZB) GetOrderHistory(getOrdersRequest *exchange.GetOrdersRequest) ([]exc
 	exchange.FilterOrdersByTickRange(&orders, getOrdersRequest.StartTicks, getOrdersRequest.EndTicks)
 
 	return orders, nil
+}
+
+// SubscribeToWebsocketChannels appends to ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle subscribing
+func (z *ZB) SubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	z.Websocket.SubscribeToChannels(channels)
+	return nil
+}
+
+// UnsubscribeToWebsocketChannels removes from ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle unsubscribing
+func (z *ZB) UnsubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	return common.ErrFunctionNotSupported
+}
+
+// GetSubscriptions returns a copied list of subscriptions
+func (z *ZB) GetSubscriptions() ([]exchange.WebsocketChannelSubscription, error) {
+	return z.Websocket.GetSubscriptions(), nil
+}
+
+// AuthenticateWebsocket sends an authentication message to the websocket
+func (z *ZB) AuthenticateWebsocket() error {
+	return common.ErrFunctionNotSupported
 }

@@ -1,43 +1,49 @@
 package poloniex
 
 import (
+	"net/http"
 	"testing"
+	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/thrasher-/gocryptotrader/common"
 	"github.com/thrasher-/gocryptotrader/config"
 	"github.com/thrasher-/gocryptotrader/currency"
 	exchange "github.com/thrasher-/gocryptotrader/exchanges"
+	"github.com/thrasher-/gocryptotrader/exchanges/sharedtestvalues"
 )
 
 var p Poloniex
 
 // Please supply your own APIKEYS here for due diligence testing
-
 const (
 	apiKey                  = ""
 	apiSecret               = ""
 	canManipulateRealOrders = false
 )
 
-func TestSetDefaults(t *testing.T) {
-	p.SetDefaults()
-}
+var isSetup bool
 
 func TestSetup(t *testing.T) {
-	cfg := config.GetConfig()
-	cfg.LoadConfig("../../testdata/configtest.json")
-	poloniexConfig, err := cfg.GetExchangeConfig("Poloniex")
-	if err != nil {
-		t.Error("Test Failed - Poloniex Setup() init error")
+	if !isSetup {
+		cfg := config.GetConfig()
+		cfg.LoadConfig("../../testdata/configtest.json")
+		poloniexConfig, err := cfg.GetExchangeConfig("Poloniex")
+		if err != nil {
+			t.Error("Test Failed - Poloniex Setup() init error")
+		}
+		poloniexConfig.AuthenticatedWebsocketAPISupport = true
+		poloniexConfig.AuthenticatedAPISupport = true
+		poloniexConfig.APIKey = apiKey
+		poloniexConfig.APISecret = apiSecret
+		p.SetDefaults()
+		p.Setup(&poloniexConfig)
+		isSetup = true
 	}
-	poloniexConfig.AuthenticatedAPISupport = true
-	poloniexConfig.APIKey = apiKey
-	poloniexConfig.APISecret = apiSecret
-
-	p.Setup(&poloniexConfig)
 }
 
 func TestGetTicker(t *testing.T) {
+	t.Parallel()
 	_, err := p.GetTicker()
 	if err != nil {
 		t.Error("Test faild - Poloniex GetTicker() error")
@@ -45,6 +51,7 @@ func TestGetTicker(t *testing.T) {
 }
 
 func TestGetVolume(t *testing.T) {
+	t.Parallel()
 	_, err := p.GetVolume()
 	if err != nil {
 		t.Error("Test faild - Poloniex GetVolume() error")
@@ -52,6 +59,7 @@ func TestGetVolume(t *testing.T) {
 }
 
 func TestGetOrderbook(t *testing.T) {
+	t.Parallel()
 	_, err := p.GetOrderbook("BTC_XMR", 50)
 	if err != nil {
 		t.Error("Test faild - Poloniex GetOrderbook() error", err)
@@ -59,6 +67,7 @@ func TestGetOrderbook(t *testing.T) {
 }
 
 func TestGetTradeHistory(t *testing.T) {
+	t.Parallel()
 	_, err := p.GetTradeHistory("BTC_XMR", "", "")
 	if err != nil {
 		t.Error("Test faild - Poloniex GetTradeHistory() error", err)
@@ -66,6 +75,7 @@ func TestGetTradeHistory(t *testing.T) {
 }
 
 func TestGetChartData(t *testing.T) {
+	t.Parallel()
 	_, err := p.GetChartData("BTC_XMR", "1405699200", "1405699400", "300")
 	if err != nil {
 		t.Error("Test faild - Poloniex GetChartData() error", err)
@@ -73,6 +83,7 @@ func TestGetChartData(t *testing.T) {
 }
 
 func TestGetCurrencies(t *testing.T) {
+	t.Parallel()
 	_, err := p.GetCurrencies()
 	if err != nil {
 		t.Error("Test faild - Poloniex GetCurrencies() error", err)
@@ -80,6 +91,7 @@ func TestGetCurrencies(t *testing.T) {
 }
 
 func TestGetLoanOrders(t *testing.T) {
+	t.Parallel()
 	_, err := p.GetLoanOrders("BTC")
 	if err != nil {
 		t.Error("Test faild - Poloniex GetLoanOrders() error", err)
@@ -101,6 +113,7 @@ func setFeeBuilder() *exchange.FeeBuilder {
 
 // TestGetFeeByTypeOfflineTradeFee logic test
 func TestGetFeeByTypeOfflineTradeFee(t *testing.T) {
+	t.Parallel()
 	var feeBuilder = setFeeBuilder()
 	p.GetFeeByType(feeBuilder)
 	if apiKey == "" || apiSecret == "" {
@@ -115,7 +128,7 @@ func TestGetFeeByTypeOfflineTradeFee(t *testing.T) {
 }
 
 func TestGetFee(t *testing.T) {
-	p.SetDefaults()
+	t.Parallel()
 	TestSetup(t)
 	var feeBuilder = setFeeBuilder()
 
@@ -132,14 +145,6 @@ func TestGetFee(t *testing.T) {
 		feeBuilder.PurchasePrice = 1000
 		if resp, err := p.GetFee(feeBuilder); resp != float64(2000) || err != nil {
 			t.Errorf("Test Failed - GetFee() error. Expected: %f, Received: %f", float64(2000), resp)
-			t.Error(err)
-		}
-
-		// CryptocurrencyTradeFee IsMaker
-		feeBuilder = setFeeBuilder()
-		feeBuilder.IsMaker = true
-		if resp, err := p.GetFee(feeBuilder); resp != float64(0.001) || err != nil {
-			t.Errorf("Test Failed - GetFee() error. Expected: %f, Received: %f", float64(0.001), resp)
 			t.Error(err)
 		}
 
@@ -195,7 +200,8 @@ func TestGetFee(t *testing.T) {
 }
 
 func TestFormatWithdrawPermissions(t *testing.T) {
-	p.SetDefaults()
+	t.Parallel()
+	TestSetup(t)
 	expectedResult := exchange.AutoWithdrawCryptoWithAPIPermissionText + " & " + exchange.NoFiatWithdrawalsText
 
 	withdrawPermissions := p.FormatWithdrawPermissions()
@@ -206,7 +212,7 @@ func TestFormatWithdrawPermissions(t *testing.T) {
 }
 
 func TestGetActiveOrders(t *testing.T) {
-	p.SetDefaults()
+	t.Parallel()
 	TestSetup(t)
 
 	var getOrdersRequest = exchange.GetOrdersRequest{
@@ -222,7 +228,7 @@ func TestGetActiveOrders(t *testing.T) {
 }
 
 func TestGetOrderHistory(t *testing.T) {
-	p.SetDefaults()
+	t.Parallel()
 	TestSetup(t)
 
 	var getOrdersRequest = exchange.GetOrdersRequest{
@@ -248,7 +254,7 @@ func areTestAPIKeysSet() bool {
 }
 
 func TestSubmitOrder(t *testing.T) {
-	p.SetDefaults()
+	t.Parallel()
 	TestSetup(t)
 
 	if areTestAPIKeysSet() && !canManipulateRealOrders {
@@ -276,7 +282,7 @@ func TestSubmitOrder(t *testing.T) {
 }
 
 func TestCancelExchangeOrder(t *testing.T) {
-	p.SetDefaults()
+	t.Parallel()
 	TestSetup(t)
 
 	if areTestAPIKeysSet() && !canManipulateRealOrders {
@@ -303,7 +309,7 @@ func TestCancelExchangeOrder(t *testing.T) {
 }
 
 func TestCancelAllExchangeOrders(t *testing.T) {
-	p.SetDefaults()
+	t.Parallel()
 	TestSetup(t)
 
 	if areTestAPIKeysSet() && !canManipulateRealOrders {
@@ -334,6 +340,7 @@ func TestCancelAllExchangeOrders(t *testing.T) {
 }
 
 func TestModifyOrder(t *testing.T) {
+	t.Parallel()
 	_, err := p.ModifyOrder(&exchange.ModifyOrder{OrderID: "1337", Price: 1337})
 	if err == nil {
 		t.Error("Test Failed - ModifyOrder() error")
@@ -341,7 +348,7 @@ func TestModifyOrder(t *testing.T) {
 }
 
 func TestWithdraw(t *testing.T) {
-	p.SetDefaults()
+	t.Parallel()
 	TestSetup(t)
 	var withdrawCryptoRequest = exchange.WithdrawRequest{
 		Amount:      100,
@@ -364,7 +371,7 @@ func TestWithdraw(t *testing.T) {
 }
 
 func TestWithdrawFiat(t *testing.T) {
-	p.SetDefaults()
+	t.Parallel()
 	TestSetup(t)
 
 	if areTestAPIKeysSet() && !canManipulateRealOrders {
@@ -380,7 +387,7 @@ func TestWithdrawFiat(t *testing.T) {
 }
 
 func TestWithdrawInternationalBank(t *testing.T) {
-	p.SetDefaults()
+	t.Parallel()
 	TestSetup(t)
 
 	if areTestAPIKeysSet() && !canManipulateRealOrders {
@@ -396,6 +403,9 @@ func TestWithdrawInternationalBank(t *testing.T) {
 }
 
 func TestGetDepositAddress(t *testing.T) {
+	t.Parallel()
+	TestSetup(t)
+
 	if areTestAPIKeysSet() {
 		_, err := p.GetDepositAddress(currency.DASH, "")
 		if err != nil {
@@ -407,4 +417,54 @@ func TestGetDepositAddress(t *testing.T) {
 			t.Error("Test Failed - GetDepositAddress()")
 		}
 	}
+}
+
+func TestWsHandleAccountData(t *testing.T) {
+	t.Parallel()
+	TestSetup(t)
+	p.Websocket.DataHandler = sharedtestvalues.GetWebsocketInterfaceChannelOverride()
+	jsons := []string{
+		`[["n",225,807230187,0,"1000.00000000","0.10000000","2018-11-07 16:42:42"],["b",267,"e","-0.10000000"]]`,
+		`[["o",807230187,"0.00000000"],["b",267,"e","0.10000000"]]`,
+		`[["t", 12345, "0.03000000", "0.50000000", "0.00250000", 0, 6083059, "0.00000375", "2018-09-08 05:54:09"]]`,
+	}
+	for i := range jsons {
+		var result [][]interface{}
+		err := common.JSONDecode([]byte(jsons[i]), &result)
+		if err != nil {
+			t.Error(err)
+		}
+		p.wsHandleAccountData(result)
+	}
+}
+
+// TestWsAuth dials websocket, sends login request.
+// Will receive a message only on failure
+func TestWsAuth(t *testing.T) {
+	TestSetup(t)
+	if !p.Websocket.IsEnabled() && !p.AuthenticatedWebsocketAPISupport || !areTestAPIKeysSet() {
+		t.Skip(exchange.WebsocketNotEnabled)
+	}
+	var err error
+	var dialer websocket.Dialer
+	p.WebsocketConn, _, err = dialer.Dial(p.Websocket.GetWebsocketURL(),
+		http.Header{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Websocket.DataHandler = sharedtestvalues.GetWebsocketInterfaceChannelOverride()
+	p.Websocket.TrafficAlert = sharedtestvalues.GetWebsocketStructChannelOverride()
+	go p.WsHandleData()
+	defer p.WebsocketConn.Close()
+	err = p.wsSendAuthorisedCommand("subscribe")
+	if err != nil {
+		t.Error(err)
+	}
+	timer := time.NewTimer(sharedtestvalues.WebsocketResponseDefaultTimeout)
+	select {
+	case response := <-p.Websocket.DataHandler:
+		t.Error(response)
+	case <-timer.C:
+	}
+	timer.Stop()
 }

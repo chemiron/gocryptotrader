@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -54,6 +55,7 @@ const (
 type HitBTC struct {
 	exchange.Base
 	WebsocketConn *websocket.Conn
+	wsRequestMtx  sync.Mutex
 }
 
 // SetDefaults sets default settings for hitbtc
@@ -80,7 +82,12 @@ func (h *HitBTC) SetDefaults() {
 	h.APIUrl = h.APIUrlDefault
 	h.WebsocketInit()
 	h.Websocket.Functionality = exchange.WebsocketTickerSupported |
-		exchange.WebsocketOrderbookSupported
+		exchange.WebsocketOrderbookSupported |
+		exchange.WebsocketSubscribeSupported |
+		exchange.WebsocketUnsubscribeSupported |
+		exchange.WebsocketAuthenticatedEndpointsSupported |
+		exchange.WebsocketSubmitOrderSupported |
+		exchange.WebsocketCancelOrderSupported
 }
 
 // Setup sets user exchange configuration settings
@@ -90,11 +97,13 @@ func (h *HitBTC) Setup(exch *config.ExchangeConfig) {
 	} else {
 		h.Enabled = true
 		h.AuthenticatedAPISupport = exch.AuthenticatedAPISupport
+		h.AuthenticatedWebsocketAPISupport = exch.AuthenticatedWebsocketAPISupport
 		h.SetAPIKeys(exch.APIKey, exch.APISecret, "", false)
 		h.SetHTTPClientTimeout(exch.HTTPTimeout)
 		h.SetHTTPClientUserAgent(exch.HTTPUserAgent)
 		h.RESTPollingDelay = exch.RESTPollingDelay // Max 60000ms
 		h.Verbose = exch.Verbose
+		h.HTTPDebugging = exch.HTTPDebugging
 		h.Websocket.SetWsStatusAndConnection(exch.Websocket)
 		h.BaseCurrencies = exch.BaseCurrencies
 		h.AvailablePairs = exch.AvailablePairs
@@ -120,8 +129,11 @@ func (h *HitBTC) Setup(exch *config.ExchangeConfig) {
 			log.Fatal(err)
 		}
 		err = h.WebsocketSetup(h.WsConnect,
+			h.Subscribe,
+			h.Unsubscribe,
 			exch.Name,
 			exch.Websocket,
+			exch.Verbose,
 			hitbtcWebsocketAddress,
 			exch.WebsocketURL)
 		if err != nil {
@@ -172,7 +184,7 @@ func (h *HitBTC) GetCurrency(currency string) (Currencies, error) {
 // pair indicates how much of the quote currency is needed to purchase one unit
 // of the base currency.
 func (h *HitBTC) GetSymbols(symbol string) ([]string, error) {
-	resp := []Symbol{}
+	var resp []Symbol
 	path := fmt.Sprintf("%s/%s/%s", h.APIUrl, apiV2Symbol, symbol)
 
 	ret := make([]string, 0, len(resp))
@@ -190,7 +202,7 @@ func (h *HitBTC) GetSymbols(symbol string) ([]string, error) {
 // GetSymbolsDetailed is the same as above but returns an array of symbols with
 // all their details.
 func (h *HitBTC) GetSymbolsDetailed() ([]Symbol, error) {
-	resp := []Symbol{}
+	var resp []Symbol
 	path := fmt.Sprintf("%s/%s", h.APIUrl, apiV2Symbol)
 
 	return resp, h.SendHTTPRequest(path, &resp)
@@ -198,7 +210,7 @@ func (h *HitBTC) GetSymbolsDetailed() ([]Symbol, error) {
 
 // GetTicker returns ticker information
 func (h *HitBTC) GetTicker(symbol string) (map[string]Ticker, error) {
-	resp1 := []TickerResponse{}
+	var resp1 []TickerResponse
 	resp2 := TickerResponse{}
 	ret := make(map[string]TickerResponse)
 	result := make(map[string]Ticker)
@@ -292,7 +304,7 @@ func (h *HitBTC) GetTrades(currencyPair, from, till, limit, offset, by, sort str
 		vals.Set("sort", sort)
 	}
 
-	resp := []TradeHistory{}
+	var resp []TradeHistory
 	path := fmt.Sprintf("%s/%s/%s?%s", h.APIUrl, apiV2Trades, currencyPair, vals.Encode())
 
 	return resp, h.SendHTTPRequest(path, &resp)
@@ -337,7 +349,7 @@ func (h *HitBTC) GetCandles(currencyPair, limit, period string) ([]ChartData, er
 		vals.Set("period", period)
 	}
 
-	resp := []ChartData{}
+	var resp []ChartData
 	path := fmt.Sprintf("%s/%s/%s?%s", h.APIUrl, apiV2Candles, currencyPair, vals.Encode())
 
 	return resp, h.SendHTTPRequest(path, &resp)
@@ -348,7 +360,7 @@ func (h *HitBTC) GetCandles(currencyPair, limit, period string) ([]ChartData, er
 
 // GetBalances returns full balance for your account
 func (h *HitBTC) GetBalances() (map[string]Balance, error) {
-	result := []Balance{}
+	var result []Balance
 	err := h.SendAuthenticatedHTTPRequest(http.MethodGet, apiV2Balance, url.Values{}, &result)
 	ret := make(map[string]Balance)
 
@@ -384,7 +396,7 @@ func (h *HitBTC) GenerateNewAddress(currency string) (DepositCryptoAddresses, er
 
 // GetActiveorders returns all your active orders
 func (h *HitBTC) GetActiveorders(currency string) ([]Order, error) {
-	resp := []Order{}
+	var resp []Order
 	err := h.SendAuthenticatedHTTPRequest(http.MethodGet, orders+"?symbol="+currency, url.Values{}, &resp)
 
 	return resp, err
@@ -591,7 +603,7 @@ func (h *HitBTC) TransferBalance(currency, from, to string, amount float64) (boo
 
 // SendHTTPRequest sends an unauthenticated HTTP request
 func (h *HitBTC) SendHTTPRequest(path string, result interface{}) error {
-	return h.SendPayload(http.MethodGet, path, nil, nil, result, false, h.Verbose)
+	return h.SendPayload(http.MethodGet, path, nil, nil, result, false, false, h.Verbose, h.HTTPDebugging)
 }
 
 // SendAuthenticatedHTTPRequest sends an authenticated http request
@@ -611,7 +623,9 @@ func (h *HitBTC) SendAuthenticatedHTTPRequest(method, endpoint string, values ur
 		bytes.NewBufferString(values.Encode()),
 		result,
 		true,
-		h.Verbose)
+		false,
+		h.Verbose,
+		h.HTTPDebugging)
 }
 
 // GetFee returns an estimate of fee based on type of transaction

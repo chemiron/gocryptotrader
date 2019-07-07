@@ -1,6 +1,10 @@
 package poloniex
 
-import "github.com/thrasher-/gocryptotrader/currency"
+import (
+	"time"
+
+	"github.com/thrasher-/gocryptotrader/currency"
+)
 
 // Ticker holds ticker data
 type Ticker struct {
@@ -163,8 +167,8 @@ type OpenOrdersResponse struct {
 	Data []Order
 }
 
-// AuthentictedTradeHistory holds client trade history information
-type AuthentictedTradeHistory struct {
+// AuthenticatedTradeHistory holds client trade history information
+type AuthenticatedTradeHistory struct {
 	GlobalTradeID int64   `json:"globalTradeID"`
 	TradeID       int64   `json:"tradeID,string"`
 	Date          string  `json:"date"`
@@ -179,12 +183,12 @@ type AuthentictedTradeHistory struct {
 
 // AuthenticatedTradeHistoryAll holds the full client trade history
 type AuthenticatedTradeHistoryAll struct {
-	Data map[string][]AuthentictedTradeHistory
+	Data map[string][]AuthenticatedTradeHistory
 }
 
 // AuthenticatedTradeHistoryResponse is a response type for trade history
 type AuthenticatedTradeHistoryResponse struct {
-	Data []AuthentictedTradeHistory
+	Data []AuthenticatedTradeHistory
 }
 
 // ResultingTrades holds resultant trade information
@@ -400,4 +404,48 @@ var WithdrawalFees = map[currency.Code]float64{
 	currency.VTC:   0.001,
 	currency.VIA:   0.01,
 	currency.ZEC:   0.001,
+}
+
+// WsAccountBalanceUpdateResponse Authenticated Ws Account data
+type WsAccountBalanceUpdateResponse struct {
+	currencyID float64
+	wallet     string
+	amount     float64
+}
+
+// WsNewLimitOrderResponse Authenticated Ws Account data
+type WsNewLimitOrderResponse struct {
+	currencyID  float64
+	orderNumber float64
+	orderType   float64
+	rate        float64
+	amount      float64
+	date        time.Time
+}
+
+// WsOrderUpdateResponse Authenticated Ws Account data
+type WsOrderUpdateResponse struct {
+	OrderNumber float64
+	NewAmount   string
+}
+
+// WsTradeNotificationResponse Authenticated Ws Account data
+type WsTradeNotificationResponse struct {
+	TradeID       float64
+	Rate          float64
+	Amount        float64
+	FeeMultiplier float64
+	FundingType   float64
+	OrderNumber   float64
+	TotalFee      float64
+	Date          time.Time
+}
+
+// WsAuthorisationRequest Authenticated Ws Account data request
+type WsAuthorisationRequest struct {
+	Command string `json:"command"`
+	Channel int64  `json:"channel"`
+	Sign    string `json:"sign"`
+	Key     string `json:"key"`
+	Payload string `json:"payload"`
 }

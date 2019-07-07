@@ -232,8 +232,11 @@ func (b *Bitstamp) CancelOrder(order *exchange.OrderCancellation) error {
 
 // CancelAllOrders cancels all orders associated with a currency pair
 func (b *Bitstamp) CancelAllOrders(_ *exchange.OrderCancellation) (exchange.CancelAllOrdersResponse, error) {
-	isCancelAllSuccessful, err := b.CancelAllExistingOrders()
-	if !isCancelAllSuccessful {
+	success, err := b.CancelAllExistingOrders()
+	if err != nil {
+		return exchange.CancelAllOrdersResponse{}, err
+	}
+	if !success {
 		err = errors.New("cancel all orders failed. Bitstamp provides no further information. Check order status to verify")
 	}
 
@@ -398,4 +401,28 @@ func (b *Bitstamp) GetOrderHistory(getOrdersRequest *exchange.GetOrdersRequest) 
 	exchange.FilterOrdersByCurrencies(&orders, getOrdersRequest.Currencies)
 
 	return orders, nil
+}
+
+// SubscribeToWebsocketChannels appends to ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle subscribing
+func (b *Bitstamp) SubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	b.Websocket.SubscribeToChannels(channels)
+	return nil
+}
+
+// UnsubscribeToWebsocketChannels removes from ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle unsubscribing
+func (b *Bitstamp) UnsubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	b.Websocket.UnsubscribeToChannels(channels)
+	return nil
+}
+
+// GetSubscriptions returns a copied list of subscriptions
+func (b *Bitstamp) GetSubscriptions() ([]exchange.WebsocketChannelSubscription, error) {
+	return b.Websocket.GetSubscriptions(), nil
+}
+
+// AuthenticateWebsocket sends an authentication message to the websocket
+func (b *Bitstamp) AuthenticateWebsocket() error {
+	return common.ErrFunctionNotSupported
 }

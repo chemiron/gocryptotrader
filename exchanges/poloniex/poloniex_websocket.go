@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -65,41 +66,8 @@ func (p *Poloniex) WsConnect() error {
 	}
 
 	go p.WsHandleData()
+	p.GenerateDefaultSubscriptions()
 
-	return p.WsSubscribe()
-}
-
-// WsSubscribe subscribes to the websocket feeds
-func (p *Poloniex) WsSubscribe() error {
-	tickerJSON, err := common.JSONEncode(WsCommand{
-		Command: "subscribe",
-		Channel: wsTickerDataID})
-	if err != nil {
-		return err
-	}
-
-	err = p.WebsocketConn.WriteMessage(websocket.TextMessage, tickerJSON)
-	if err != nil {
-		return err
-	}
-
-	pairs := p.GetEnabledCurrencies()
-	for _, nextPair := range pairs {
-		fPair := exchange.FormatExchangeCurrency(p.GetName(), nextPair)
-
-		orderbookJSON, err := common.JSONEncode(WsCommand{
-			Command: "subscribe",
-			Channel: fPair.String(),
-		})
-		if err != nil {
-			return err
-		}
-
-		err = p.WebsocketConn.WriteMessage(websocket.TextMessage, orderbookJSON)
-		if err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
@@ -129,11 +97,6 @@ func (p *Poloniex) WsHandleData() {
 	p.Websocket.Wg.Add(1)
 
 	defer func() {
-		err := p.WebsocketConn.Close()
-		if err != nil {
-			p.Websocket.DataHandler <- fmt.Errorf("poloniex_websocket.go - Unable to to close Websocket connection. Error: %s",
-				err)
-		}
 		p.Websocket.Wg.Done()
 	}()
 
@@ -155,124 +118,184 @@ func (p *Poloniex) WsHandleData() {
 				p.Websocket.DataHandler <- err
 				continue
 			}
-
-			data := result.([]interface{})
-			chanID := int(data[0].(float64))
-
-			if len(data) == 2 && chanID != wsHeartbeat {
-				if checkSubscriptionSuccess(data) {
-					if p.Verbose {
-						log.Debugf("poloniex websocket subscribed to channel successfully. %d", chanID)
+			switch data := result.(type) {
+			case map[string]interface{}:
+				// subscription error
+				p.Websocket.DataHandler <- errors.New(data["error"].(string))
+			case []interface{}:
+				chanID := int(data[0].(float64))
+				if len(data) == 2 && chanID != wsHeartbeat {
+					if checkSubscriptionSuccess(data) {
+						if p.Verbose {
+							log.Debugf("poloniex websocket subscribed to channel successfully. %d", chanID)
+						}
+					} else {
+						p.Websocket.DataHandler <- fmt.Errorf("poloniex websocket subscription to channel failed. %d", chanID)
 					}
-				} else {
-					if p.Verbose {
-						log.Debugf("poloniex websocket subscription to channel failed. %d", chanID)
-					}
+					continue
 				}
-				continue
-			}
 
-			switch chanID {
-			case wsAccountNotificationID:
-			case wsTickerDataID:
-				tickerData := data[2].([]interface{})
-				var t WsTicker
-				t.LastPrice, _ = strconv.ParseFloat(tickerData[1].(string), 64)
-				t.LowestAsk, _ = strconv.ParseFloat(tickerData[2].(string), 64)
-				t.HighestBid, _ = strconv.ParseFloat(tickerData[3].(string), 64)
-				t.PercentageChange, _ = strconv.ParseFloat(tickerData[4].(string), 64)
-				t.BaseCurrencyVolume24H, _ = strconv.ParseFloat(tickerData[5].(string), 64)
-				t.QuoteCurrencyVolume24H, _ = strconv.ParseFloat(tickerData[6].(string), 64)
-				isFrozen := false
-				if tickerData[7].(float64) == 1 {
-					isFrozen = true
-				}
-				t.IsFrozen = isFrozen
-				t.HighestTradeIn24H, _ = strconv.ParseFloat(tickerData[8].(string), 64)
-				t.LowestTradePrice24H, _ = strconv.ParseFloat(tickerData[9].(string), 64)
+				switch chanID {
+				case wsAccountNotificationID:
+					p.wsHandleAccountData(data[2].([][]interface{}))
+				case wsTickerDataID:
+					p.wsHandleTickerData(data)
+				case ws24HourExchangeVolumeID:
+				case wsHeartbeat:
+				default:
+					if len(data) > 2 {
+						subData := data[2].([]interface{})
 
-				p.Websocket.DataHandler <- exchange.TickerData{
-					Timestamp: time.Now(),
-					Exchange:  p.GetName(),
-					AssetType: "SPOT",
-					LowPrice:  t.LowestAsk,
-					HighPrice: t.HighestBid,
-				}
-			case ws24HourExchangeVolumeID:
-			case wsHeartbeat:
-			default:
-				if len(data) > 2 {
-					subData := data[2].([]interface{})
+						for x := range subData {
+							dataL2 := subData[x]
+							dataL3 := dataL2.([]interface{})
 
-					for x := range subData {
-						dataL2 := subData[x]
-						dataL3 := dataL2.([]interface{})
+							switch getWSDataType(dataL2) {
+							case "i":
+								dataL3map := dataL3[1].(map[string]interface{})
+								currencyPair, ok := dataL3map["currencyPair"].(string)
+								if !ok {
+									p.Websocket.DataHandler <- errors.New("poloniex.go error - could not find currency pair in map")
+									continue
+								}
 
-						switch getWSDataType(dataL2) {
-						case "i":
-							dataL3map := dataL3[1].(map[string]interface{})
-							currencyPair, ok := dataL3map["currencyPair"].(string)
-							if !ok {
-								p.Websocket.DataHandler <- errors.New("poloniex.go error - could not find currency pair in map")
-								continue
-							}
+								orderbookData, ok := dataL3map["orderBook"].([]interface{})
+								if !ok {
+									p.Websocket.DataHandler <- errors.New("poloniex.go error - could not find orderbook data in map")
+									continue
+								}
 
-							orderbookData, ok := dataL3map["orderBook"].([]interface{})
-							if !ok {
-								p.Websocket.DataHandler <- errors.New("poloniex.go error - could not find orderbook data in map")
-								continue
-							}
+								err := p.WsProcessOrderbookSnapshot(orderbookData, currencyPair)
+								if err != nil {
+									p.Websocket.DataHandler <- err
+									continue
+								}
 
-							err := p.WsProcessOrderbookSnapshot(orderbookData, currencyPair)
-							if err != nil {
-								p.Websocket.DataHandler <- err
-								continue
-							}
+								p.Websocket.DataHandler <- exchange.WebsocketOrderbookUpdate{
+									Exchange: p.GetName(),
+									Asset:    "SPOT",
+									Pair:     currency.NewPairFromString(currencyPair),
+								}
+							case "o":
+								currencyPair := CurrencyPairID[chanID]
+								err := p.WsProcessOrderbookUpdate(dataL3, currencyPair)
+								if err != nil {
+									p.Websocket.DataHandler <- err
+									continue
+								}
 
-							p.Websocket.DataHandler <- exchange.WebsocketOrderbookUpdate{
-								Exchange: p.GetName(),
-								Asset:    "SPOT",
-								Pair:     currency.NewPairFromString(currencyPair),
-							}
-						case "o":
-							currencyPair := CurrencyPairID[chanID]
-							err := p.WsProcessOrderbookUpdate(dataL3, currencyPair)
-							if err != nil {
-								p.Websocket.DataHandler <- err
-								continue
-							}
+								p.Websocket.DataHandler <- exchange.WebsocketOrderbookUpdate{
+									Exchange: p.GetName(),
+									Asset:    "SPOT",
+									Pair:     currency.NewPairFromString(currencyPair),
+								}
+							case "t":
+								currencyPair := CurrencyPairID[chanID]
+								var trade WsTrade
+								trade.Symbol = CurrencyPairID[chanID]
+								trade.TradeID, _ = strconv.ParseInt(dataL3[1].(string), 10, 64)
+								// 1 for buy 0 for sell
+								side := "buy"
+								if dataL3[2].(float64) != 1 {
+									side = "sell"
+								}
+								trade.Side = side
+								trade.Volume, _ = strconv.ParseFloat(dataL3[3].(string), 64)
+								trade.Price, _ = strconv.ParseFloat(dataL3[4].(string), 64)
+								trade.Timestamp = int64(dataL3[5].(float64))
 
-							p.Websocket.DataHandler <- exchange.WebsocketOrderbookUpdate{
-								Exchange: p.GetName(),
-								Asset:    "SPOT",
-								Pair:     currency.NewPairFromString(currencyPair),
-							}
-						case "t":
-							currencyPair := CurrencyPairID[chanID]
-							var trade WsTrade
-							trade.Symbol = CurrencyPairID[chanID]
-							trade.TradeID, _ = strconv.ParseInt(dataL3[1].(string), 10, 64)
-							// 1 for buy 0 for sell
-							side := "buy"
-							if dataL3[2].(float64) != 1 {
-								side = "sell"
-							}
-							trade.Side = side
-							trade.Volume, _ = strconv.ParseFloat(dataL3[3].(string), 64)
-							trade.Price, _ = strconv.ParseFloat(dataL3[4].(string), 64)
-							trade.Timestamp = int64(dataL3[5].(float64))
-
-							p.Websocket.DataHandler <- exchange.TradeData{
-								Timestamp:    time.Unix(trade.Timestamp, 0),
-								CurrencyPair: currency.NewPairFromString(currencyPair),
-								Side:         trade.Side,
-								Amount:       trade.Volume,
-								Price:        trade.Price,
+								p.Websocket.DataHandler <- exchange.TradeData{
+									Timestamp:    time.Unix(trade.Timestamp, 0),
+									CurrencyPair: currency.NewPairFromString(currencyPair),
+									Side:         trade.Side,
+									Amount:       trade.Volume,
+									Price:        trade.Price,
+								}
 							}
 						}
 					}
 				}
 			}
+		}
+	}
+}
+
+func (p *Poloniex) wsHandleTickerData(data []interface{}) {
+	tickerData := data[2].([]interface{})
+	var t WsTicker
+	t.LastPrice, _ = strconv.ParseFloat(tickerData[1].(string), 64)
+	t.LowestAsk, _ = strconv.ParseFloat(tickerData[2].(string), 64)
+	t.HighestBid, _ = strconv.ParseFloat(tickerData[3].(string), 64)
+	t.PercentageChange, _ = strconv.ParseFloat(tickerData[4].(string), 64)
+	t.BaseCurrencyVolume24H, _ = strconv.ParseFloat(tickerData[5].(string), 64)
+	t.QuoteCurrencyVolume24H, _ = strconv.ParseFloat(tickerData[6].(string), 64)
+	isFrozen := false
+	if tickerData[7].(float64) == 1 {
+		isFrozen = true
+	}
+	t.IsFrozen = isFrozen
+	t.HighestTradeIn24H, _ = strconv.ParseFloat(tickerData[8].(string), 64)
+	t.LowestTradePrice24H, _ = strconv.ParseFloat(tickerData[9].(string), 64)
+
+	p.Websocket.DataHandler <- exchange.TickerData{
+		Timestamp: time.Now(),
+		Exchange:  p.GetName(),
+		AssetType: "SPOT",
+		LowPrice:  t.LowestAsk,
+		HighPrice: t.HighestBid,
+	}
+}
+
+// wsHandleAccountData Parses account data and sends to datahandler
+func (p *Poloniex) wsHandleAccountData(accountData [][]interface{}) {
+	for i := range accountData {
+		switch accountData[i][0].(string) {
+		case "b":
+			amount, _ := strconv.ParseFloat(accountData[i][3].(string), 64)
+			response := WsAccountBalanceUpdateResponse{
+				currencyID: accountData[i][1].(float64),
+				wallet:     accountData[i][2].(string),
+				amount:     amount,
+			}
+			p.Websocket.DataHandler <- response
+		case "n":
+			timeParse, _ := time.Parse("2006-01-02 15:04:05", accountData[i][6].(string))
+			rate, _ := strconv.ParseFloat(accountData[i][4].(string), 64)
+			amount, _ := strconv.ParseFloat(accountData[i][5].(string), 64)
+
+			response := WsNewLimitOrderResponse{
+				currencyID:  accountData[i][1].(float64),
+				orderNumber: accountData[i][2].(float64),
+				orderType:   accountData[i][3].(float64),
+				rate:        rate,
+				amount:      amount,
+				date:        timeParse,
+			}
+			p.Websocket.DataHandler <- response
+		case "o":
+			response := WsOrderUpdateResponse{
+				OrderNumber: accountData[i][1].(float64),
+				NewAmount:   accountData[i][2].(string),
+			}
+			p.Websocket.DataHandler <- response
+		case "t":
+			timeParse, _ := time.Parse("2006-01-02 15:04:05", accountData[i][8].(string))
+			rate, _ := strconv.ParseFloat(accountData[i][2].(string), 64)
+			amount, _ := strconv.ParseFloat(accountData[i][3].(string), 64)
+			feeMultiplier, _ := strconv.ParseFloat(accountData[i][4].(string), 64)
+			totalFee, _ := strconv.ParseFloat(accountData[i][7].(string), 64)
+
+			response := WsTradeNotificationResponse{
+				TradeID:       accountData[i][1].(float64),
+				Rate:          rate,
+				Amount:        amount,
+				FeeMultiplier: feeMultiplier,
+				FundingType:   accountData[i][5].(float64),
+				OrderNumber:   accountData[i][6].(float64),
+				TotalFee:      totalFee,
+				Date:          timeParse,
+			}
+			p.Websocket.DataHandler <- response
 		}
 	}
 }
@@ -467,4 +490,88 @@ var CurrencyPairID = map[int]string{
 	224: "USDC_BTC",
 	226: "USDC_USDT",
 	225: "USDC_ETH",
+}
+
+// GenerateDefaultSubscriptions Adds default subscriptions to websocket to be handled by ManageSubscriptions()
+func (p *Poloniex) GenerateDefaultSubscriptions() {
+	var subscriptions []exchange.WebsocketChannelSubscription
+	// Tickerdata is its own channel
+	subscriptions = append(subscriptions, exchange.WebsocketChannelSubscription{
+		Channel: fmt.Sprintf("%v", wsTickerDataID),
+	})
+
+	if p.GetAuthenticatedAPISupport(exchange.WebsocketAuthentication) {
+		subscriptions = append(subscriptions, exchange.WebsocketChannelSubscription{
+			Channel: fmt.Sprintf("%v", wsAccountNotificationID),
+		})
+	}
+
+	enabledCurrencies := p.GetEnabledCurrencies()
+	for j := range enabledCurrencies {
+		enabledCurrencies[j].Delimiter = "_"
+		subscriptions = append(subscriptions, exchange.WebsocketChannelSubscription{
+			Channel:  "orderbook",
+			Currency: enabledCurrencies[j],
+		})
+	}
+	p.Websocket.SubscribeToChannels(subscriptions)
+}
+
+// Subscribe sends a websocket message to receive data from the channel
+func (p *Poloniex) Subscribe(channelToSubscribe exchange.WebsocketChannelSubscription) error {
+	subscriptionRequest := WsCommand{
+		Command: "subscribe",
+	}
+	switch {
+	case strings.EqualFold(fmt.Sprintf("%v", wsAccountNotificationID), channelToSubscribe.Channel):
+		return p.wsSendAuthorisedCommand("subscribe")
+	case strings.EqualFold(fmt.Sprintf("%v", wsTickerDataID), channelToSubscribe.Channel):
+		subscriptionRequest.Channel = wsTickerDataID
+	default:
+		subscriptionRequest.Channel = channelToSubscribe.Currency.String()
+	}
+	return p.wsSend(subscriptionRequest)
+}
+
+// Unsubscribe sends a websocket message to stop receiving data from the channel
+func (p *Poloniex) Unsubscribe(channelToSubscribe exchange.WebsocketChannelSubscription) error {
+	unsubscriptionRequest := WsCommand{
+		Command: "unsubscribe",
+	}
+	switch {
+	case strings.EqualFold(fmt.Sprintf("%v", wsAccountNotificationID), channelToSubscribe.Channel):
+		return p.wsSendAuthorisedCommand("unsubscribe")
+	case strings.EqualFold(fmt.Sprintf("%v", wsTickerDataID), channelToSubscribe.Channel):
+		unsubscriptionRequest.Channel = wsTickerDataID
+	default:
+		unsubscriptionRequest.Channel = channelToSubscribe.Currency.String()
+	}
+	return p.wsSend(unsubscriptionRequest)
+}
+
+// WsSend sends data to the websocket server
+func (p *Poloniex) wsSend(data interface{}) error {
+	p.wsRequestMtx.Lock()
+	defer p.wsRequestMtx.Unlock()
+	json, err := common.JSONEncode(data)
+	if err != nil {
+		return err
+	}
+	if p.Verbose {
+		log.Debugf("%v sending message to websocket %v", p.Name, data)
+	}
+	return p.WebsocketConn.WriteMessage(websocket.TextMessage, json)
+}
+
+func (p *Poloniex) wsSendAuthorisedCommand(command string) error {
+	nonce := fmt.Sprintf("nonce=%v", time.Now().UnixNano())
+	hmac := common.GetHMAC(common.HashSHA512, []byte(nonce), []byte(p.APISecret))
+	request := WsAuthorisationRequest{
+		Command: command,
+		Channel: 1000,
+		Sign:    common.HexEncodeToString(hmac),
+		Key:     p.APIKey,
+		Payload: nonce,
+	}
+	return p.wsSend(request)
 }

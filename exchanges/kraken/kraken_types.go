@@ -410,38 +410,45 @@ type WebsocketSubscriptionData struct {
 	Depth    int64  `json:"depth,omitempty"`    // Optional - depth associated with book subscription in number of levels each side, default 10. Valid Options are: 10, 25, 100, 500, 1000
 }
 
-// WebsocketDataResponse holds all data response types
+// WebsocketEventResponse holds all data response types
 type WebsocketEventResponse struct {
 	Event        string                            `json:"event"`
 	Status       string                            `json:"status"`
 	Pair         currency.Pair                     `json:"pair,omitempty"`
 	RequestID    int64                             `json:"reqid,omitempty"` // Optional, client originated ID reflected in response message.
 	Subscription WebsocketSubscriptionResponseData `json:"subscription,omitempty"`
+	ChannelName  string                            `json:"channelName,omitempty"`
 	WebsocketSubscriptionEventResponse
 	WebsocketStatusResponse
 	WebsocketErrorResponse
 }
 
+// WebsocketSubscriptionEventResponse defines a websocket socket event response
 type WebsocketSubscriptionEventResponse struct {
 	ChannelID int64 `json:"channelID"`
 }
 
+// WebsocketSubscriptionResponseData defines a websocket subscription response
 type WebsocketSubscriptionResponseData struct {
 	Name string `json:"name"`
 }
 
+// WebsocketStatusResponse defines a websocket status response
 type WebsocketStatusResponse struct {
 	ConnectionID float64 `json:"connectionID"`
 	Version      string  `json:"version"`
 }
 
+// WebsocketDataResponse defines a websocket data type
 type WebsocketDataResponse []interface{}
 
+// WebsocketErrorResponse defines a websocket error response
 type WebsocketErrorResponse struct {
 	ErrorMessage string `json:"errorMessage"`
 }
 
-// Holds relevant data for channels to identify what we're doing
+// WebsocketChannelData Holds relevant data for channels to identify what we're
+// doing
 type WebsocketChannelData struct {
 	Subscription string
 	Pair         currency.Pair

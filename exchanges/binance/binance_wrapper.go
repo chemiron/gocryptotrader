@@ -347,7 +347,7 @@ func (b *Binance) GetActiveOrders(getOrdersRequest *exchange.GetOrdersRequest) (
 		for i := range resp {
 			orderSide := exchange.OrderSide(strings.ToUpper(resp[i].Side))
 			orderType := exchange.OrderType(strings.ToUpper(resp[i].Type))
-			orderDate := time.Unix(int64(resp[i].Time), 0)
+			orderDate := time.Unix(0, int64(resp[i].Time)*int64(time.Millisecond))
 
 			orders = append(orders, exchange.OrderDetail{
 				Amount:       resp[i].OrigQty,
@@ -387,7 +387,7 @@ func (b *Binance) GetOrderHistory(getOrdersRequest *exchange.GetOrdersRequest) (
 		for i := range resp {
 			orderSide := exchange.OrderSide(strings.ToUpper(resp[i].Side))
 			orderType := exchange.OrderType(strings.ToUpper(resp[i].Type))
-			orderDate := time.Unix(int64(resp[i].Time), 0)
+			orderDate := time.Unix(0, int64(resp[i].Time)*int64(time.Millisecond))
 			// New orders are covered in GetOpenOrders
 			if resp[i].Status == "NEW" {
 				continue
@@ -412,4 +412,26 @@ func (b *Binance) GetOrderHistory(getOrdersRequest *exchange.GetOrdersRequest) (
 	exchange.FilterOrdersByTickRange(&orders, getOrdersRequest.StartTicks, getOrdersRequest.EndTicks)
 
 	return orders, nil
+}
+
+// SubscribeToWebsocketChannels appends to ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle subscribing
+func (b *Binance) SubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	return common.ErrFunctionNotSupported
+}
+
+// UnsubscribeToWebsocketChannels removes from ChannelsToSubscribe
+// which lets websocket.manageSubscriptions handle unsubscribing
+func (b *Binance) UnsubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+	return common.ErrFunctionNotSupported
+}
+
+// GetSubscriptions returns a copied list of subscriptions
+func (b *Binance) GetSubscriptions() ([]exchange.WebsocketChannelSubscription, error) {
+	return b.Websocket.GetSubscriptions(), nil
+}
+
+// AuthenticateWebsocket sends an authentication message to the websocket
+func (b *Binance) AuthenticateWebsocket() error {
+	return common.ErrFunctionNotSupported
 }
