@@ -1,51 +1,59 @@
 run:
-  deadline: 30s
+  timeout: 1m30s
   issues-exit-code: 1
   tests: true
   skip-dirs:
     - vendor
-    - web
+    - web/
     - testdata
 
 linters:
   disable-all: true
   enable:
 # defaults
-    - govet
-#   - errcheck
-    - staticcheck
-#   - unused
-    - gosimple
-    - structcheck
-#   - varcheck
-    - ineffassign
 #   - deadcode
-    - typecheck
-    - goimports
+#   - errcheck
+    - gosimple
     - govet
+    - ineffassign
+    - staticcheck
+    - structcheck
+    - typecheck
+#   - unused
+#   - varcheck
 
 # disabled by default linters
-    - golint
-    - stylecheck
-    - gosec
-#    - interfacer
-    - unconvert
+    - bodyclose
+    - depguard
+    - dogsled
 #   - dupl
+#   - funlen
+#   - gochecknoglobals
+#   - gochecknoinits
+#   - gocognit
     - goconst
+    - gocritic
 #   - gocyclo
+#   - godox
     - gofmt
     - goimports
-#   - maligned
-    - depguard
-    - misspell
+    - golint
+#   - gomnd
+    - goprintffuncname
+    - gosec
+#   - interfacer
 #   - lll
-    - unparam
+#   - maligned
+    - misspell
     - nakedret
 #   - prealloc
+    - rowserrcheck
     - scopelint
-    - gocritic
-#   - gochecknoinits
-#   - gochecknoglobals
+    - stylecheck
+    - unconvert
+    - unparam
+    - whitespace
+#   - wsl
 
 linters-settings:
   govet:
@@ -67,6 +75,7 @@ linters-settings:
       - wrapperFunc
       - importShadow
       - methodExprCall
+      - evalOrder
 
 issues:
   max-issues-per-linter: 0
@@ -76,6 +85,6 @@ issues:
     - text: "weak cryptographic primitive"
       linters:
         - gosec
-
-service:
-  golangci-lint-version: 1.16.x 
+    - text: "Expect WriteFile permissions to be 0600 or less"
+      linters:
+        - gosec

@@ -3,15 +3,17 @@ package portfolio
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
-	"github.com/thrasher-/gocryptotrader/common"
-	"github.com/thrasher-/gocryptotrader/currency"
-	log "github.com/thrasher-/gocryptotrader/logger"
+	"github.com/thrasher-corp/gocryptotrader/common"
+	"github.com/thrasher-corp/gocryptotrader/currency"
+	"github.com/thrasher-corp/gocryptotrader/log"
 )
 
 const (
 	cryptoIDAPIURL = "https://chainz.cryptoid.info"
+	xrpScanAPIURL  = "https://api.xrpscan.com/api/v1/account/"
 
 	ethplorerAPIURL      = "https://api.ethplorer.io"
 	ethplorerAddressInfo = "getAddressInfo"
@@ -25,6 +27,9 @@ const (
 // Portfolio is variable store holding an array of portfolioAddress
 var Portfolio Base
 
+// Verbose allows for debug output when sending an http request
+var Verbose bool
+
 // GetEthereumBalance single or multiple address information as
 // EtherchainBalanceResponse
 func GetEthereumBalance(address string) (EthplorerResponse, error) {
@@ -36,8 +41,9 @@ func GetEthereumBalance(address string) (EthplorerResponse, error) {
 	urlPath := fmt.Sprintf(
 		"%s/%s/%s?apiKey=freekey", ethplorerAPIURL, ethplorerAddressInfo, address,
 	)
+
 	result := EthplorerResponse{}
-	return result, common.SendHTTPGetRequest(urlPath, true, false, &result)
+	return result, common.SendHTTPGetRequest(urlPath, true, Verbose, &result)
 }
 
 // GetCryptoIDAddress queries CryptoID for an address balance for a
@@ -54,11 +60,21 @@ func GetCryptoIDAddress(address string, coinType currency.Code) (float64, error)
 		coinType.Lower(),
 		address)
 
-	err = common.SendHTTPGetRequest(url, true, false, &result)
+	err = common.SendHTTPGetRequest(url, true, Verbose, &result)
 	if err != nil {
 		return 0, err
 	}
 	return result.(float64), nil
+}
+
+// GetRippleBalance returns the value for a ripple address
+func GetRippleBalance(address string) (float64, error) {
+	var result XRPScanAccount
+	err := common.SendHTTPGetRequest(xrpScanAPIURL+address, true, Verbose, &result)
+	if err != nil {
+		return 0, err
+	}
+	return result.XRPBalance, nil
 }
 
 // GetAddressBalance acceses the portfolio base and returns the balance by passed
@@ -148,10 +164,17 @@ func (p *Base) UpdateExchangeAddressBalance(exchangeName string, coinType curren
 }
 
 // AddAddress adds an address to the portfolio base
-func (p *Base) AddAddress(address, description string, coinType currency.Code, balance float64) {
+func (p *Base) AddAddress(address, description string, coinType currency.Code, balance float64) error {
+	if address == "" {
+		return errors.New("address is empty")
+	}
+
+	if coinType.String() == "" {
+		return errors.New("coin type is empty")
+	}
+
 	if description == PortfolioAddressExchange {
 		p.AddExchangeAddress(address, coinType, balance)
-		return
 	}
 	if !p.AddressExists(address) {
 		p.Addresses = append(
@@ -165,66 +188,96 @@ func (p *Base) AddAddress(address, description string, coinType currency.Code, b
 			p.UpdateAddressBalance(address, balance)
 		}
 	}
+	return nil
 }
 
 // RemoveAddress removes an address when checked against the correct address and
 // coinType
-func (p *Base) RemoveAddress(address, description string, coinType currency.Code) {
+func (p *Base) RemoveAddress(address, description string, coinType currency.Code) error {
+	if address == "" {
+		return errors.New("address is empty")
+	}
+
+	if coinType.String() == "" {
+		return errors.New("coin type is empty")
+	}
+
 	for x := range p.Addresses {
 		if p.Addresses[x].Address == address &&
 			p.Addresses[x].CoinType == coinType &&
 			p.Addresses[x].Description == description {
 			p.Addresses = append(p.Addresses[:x], p.Addresses[x+1:]...)
-			return
+			return nil
 		}
 	}
+
+	return errors.New("portfolio item does not exist")
 }
 
 // UpdatePortfolio adds to the portfolio addresses by coin type
-func (p *Base) UpdatePortfolio(addresses []string, coinType currency.Code) bool {
-	if common.StringContains(common.JoinStrings(addresses, ","), PortfolioAddressExchange) ||
-		common.StringContains(common.JoinStrings(addresses, ","), PortfolioAddressPersonal) {
-		return true
+func (p *Base) UpdatePortfolio(addresses []string, coinType currency.Code) error {
+	if strings.Contains(strings.Join(addresses, ","), PortfolioAddressExchange) ||
+		strings.Contains(strings.Join(addresses, ","), PortfolioAddressPersonal) {
+		return nil
 	}
 
-	numErrors := 0
-	if coinType == currency.ETH {
+	switch coinType {
+	case currency.ETH:
 		for x := range addresses {
 			result, err := GetEthereumBalance(addresses[x])
 			if err != nil {
-				numErrors++
-				continue
+				return err
 			}
 
 			if result.Error.Message != "" {
-				numErrors++
-				continue
+				return errors.New(result.Error.Message)
 			}
-			p.AddAddress(addresses[x],
+
+			err = p.AddAddress(addresses[x],
 				PortfolioAddressPersonal,
 				coinType,
 				result.ETH.Balance)
+			if err != nil {
+				return err
+			}
 		}
-		return numErrors == 0
-	}
-	for x := range addresses {
-		result, err := GetCryptoIDAddress(addresses[x], coinType)
-		if err != nil {
-			return false
+	case currency.XRP:
+		for x := range addresses {
+			result, err := GetRippleBalance(addresses[x])
+			if err != nil {
+				return err
+			}
+			err = p.AddAddress(addresses[x],
+				PortfolioAddressPersonal,
+				coinType,
+				result)
+			if err != nil {
+				return err
+			}
 		}
-		p.AddAddress(addresses[x],
-			PortfolioAddressPersonal,
-			coinType,
-			result)
+	default:
+		for x := range addresses {
+			result, err := GetCryptoIDAddress(addresses[x], coinType)
+			if err != nil {
+				return err
+			}
+			err = p.AddAddress(addresses[x],
+				PortfolioAddressPersonal,
+				coinType,
+				result)
+			if err != nil {
+				return err
+			}
+		}
 	}
-	return true
+	return nil
 }
 
 // GetPortfolioByExchange returns currency portfolio amount by exchange
 func (p *Base) GetPortfolioByExchange(exchangeName string) map[currency.Code]float64 {
 	result := make(map[currency.Code]float64)
 	for x := range p.Addresses {
-		if common.StringContains(p.Addresses[x].Address, exchangeName) {
+		if strings.Contains(p.Addresses[x].Address, exchangeName) {
 			result[p.Addresses[x].CoinType] = p.Addresses[x].Balance
 		}
 	}
@@ -347,7 +400,6 @@ func (p *Base) GetPortfolioSummary() Summary {
 				Percentage: getPercentageSpecific(z, y, totalCoins),
 			}
 			coinSummary[y] = coinSum
-
 		}
 		exchangeSummary[exchgName] = coinSummary
 	}
@@ -380,7 +432,7 @@ func (p *Base) GetPortfolioSummary() Summary {
 func (p *Base) GetPortfolioGroupedCoin() map[currency.Code][]string {
 	result := make(map[currency.Code][]string)
 	for _, x := range p.Addresses {
-		if common.StringContains(x.Description, PortfolioAddressExchange) {
+		if strings.Contains(x.Description, PortfolioAddressExchange) {
 			continue
 		}
 		result[x.CoinType] = append(result[x.CoinType], x.Address)
@@ -388,28 +440,35 @@ func (p *Base) GetPortfolioGroupedCoin() map[currency.Code][]string {
 	return result
 }
 
-// SeedPortfolio appends a portfolio base object with another base portfolio
+// Seed appends a portfolio base object with another base portfolio
 // addresses
-func (p *Base) SeedPortfolio(port Base) {
+func (p *Base) Seed(port Base) {
 	p.Addresses = port.Addresses
 }
 
 // StartPortfolioWatcher observes the portfolio object
 func StartPortfolioWatcher() {
 	addrCount := len(Portfolio.Addresses)
-	log.Debugf(
+	log.Debugf(log.PortfolioMgr,
 		"PortfolioWatcher started: Have %d entries in portfolio.\n", addrCount,
 	)
 	for {
 		data := Portfolio.GetPortfolioGroupedCoin()
 		for key, value := range data {
-			success := Portfolio.UpdatePortfolio(value, key)
-			if success {
-				log.Debugf(
-					"PortfolioWatcher: Successfully updated address balance for %s address(es) %s\n",
-					key, value,
-				)
+			err := Portfolio.UpdatePortfolio(value, key)
+			if err != nil {
+				log.Errorf(log.PortfolioMgr,
+					"PortfolioWatcher error %s for currency %s, val %v\n",
+					err,
+					key,
+					value)
+				continue
 			}
+
+			log.Debugf(log.PortfolioMgr,
+				"PortfolioWatcher: Successfully updated address balance for %s address(es) %s\n",
+				key,
+				value)
 		}
 		time.Sleep(time.Minute * 10)
 	}
@@ -418,4 +477,38 @@ func StartPortfolioWatcher() {
 // GetPortfolio returns a pointer to the portfolio base
 func GetPortfolio() *Base {
 	return &Portfolio
+}
+
+// IsExchangeSupported checks if exchange is supported by portfolio address
+func IsExchangeSupported(exchange, address string) (ret bool) {
+	for x := range Portfolio.Addresses {
+		if Portfolio.Addresses[x].Address != address {
+			continue
+		}
+		exchangeList := strings.Split(Portfolio.Addresses[x].SupportedExchanges, ",")
+		return common.StringDataContainsInsensitive(exchangeList, exchange)
+	}
+	return
+}
+
+// IsColdStorage checks if address is a cold storage wallet
+func IsColdStorage(address string) (ret bool) {
+	for x := range Portfolio.Addresses {
+		if Portfolio.Addresses[x].Address != address {
+			continue
+		}
+		return Portfolio.Addresses[x].ColdStorage
+	}
+	return
+}
+
+// IsWhiteListed checks if address is whitelisted for withdraw transfers
+func IsWhiteListed(address string) (ret bool) {
+	for x := range Portfolio.Addresses {
+		if Portfolio.Addresses[x].Address != address {
+			continue
+		}
+		return Portfolio.Addresses[x].WhiteListed
+	}
+	return
 }

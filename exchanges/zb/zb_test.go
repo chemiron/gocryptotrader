@@ -1,17 +1,24 @@
 package zb
 
 import (
+	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
+	"strconv"
 	"testing"
-	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/thrasher-/gocryptotrader/common"
-	"github.com/thrasher-/gocryptotrader/config"
-	"github.com/thrasher-/gocryptotrader/currency"
-	exchange "github.com/thrasher-/gocryptotrader/exchanges"
-	"github.com/thrasher-/gocryptotrader/exchanges/sharedtestvalues"
+	"github.com/thrasher-corp/gocryptotrader/common"
+	"github.com/thrasher-corp/gocryptotrader/config"
+	"github.com/thrasher-corp/gocryptotrader/core"
+	"github.com/thrasher-corp/gocryptotrader/currency"
+	exchange "github.com/thrasher-corp/gocryptotrader/exchanges"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/order"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/sharedtestvalues"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/websocket/wshandler"
+	"github.com/thrasher-corp/gocryptotrader/portfolio/withdraw"
 )
 
 // Please supply you own test keys here for due diligence testing.
@@ -24,51 +31,59 @@ const (
 var z ZB
 var wsSetupRan bool
 
-func TestSetDefaults(t *testing.T) {
+func TestMain(m *testing.M) {
 	z.SetDefaults()
-}
-
-func TestSetup(t *testing.T) {
 	cfg := config.GetConfig()
-	cfg.LoadConfig("../../testdata/configtest.json")
+	err := cfg.LoadConfig("../../testdata/configtest.json", true)
+	if err != nil {
+		log.Fatal("ZB load config error", err)
+	}
 	zbConfig, err := cfg.GetExchangeConfig("ZB")
 	if err != nil {
-		t.Error("Test Failed - ZB Setup() init error")
+		log.Fatal("ZB Setup() init error", err)
 	}
-	zbConfig.AuthenticatedAPISupport = true
-	zbConfig.AuthenticatedWebsocketAPISupport = true
-	zbConfig.APIKey = apiKey
-	zbConfig.APISecret = apiSecret
-
-	z.Setup(&zbConfig)
+	zbConfig.API.AuthenticatedSupport = true
+	zbConfig.API.AuthenticatedWebsocketSupport = true
+	zbConfig.API.Credentials.Key = apiKey
+	zbConfig.API.Credentials.Secret = apiSecret
+	err = z.Setup(zbConfig)
+	if err != nil {
+		log.Fatal("ZB setup error", err)
+	}
+	z.Websocket.DataHandler = sharedtestvalues.GetWebsocketInterfaceChannelOverride()
+	z.Websocket.TrafficAlert = sharedtestvalues.GetWebsocketStructChannelOverride()
+	os.Exit(m.Run())
 }
 
 func setupWsAuth(t *testing.T) {
 	if wsSetupRan {
 		return
 	}
-	z.SetDefaults()
-	TestSetup(t)
-	if !z.Websocket.IsEnabled() && !z.AuthenticatedWebsocketAPISupport || !areTestAPIKeysSet() || !canManipulateRealOrders {
-		t.Skip(exchange.WebsocketNotEnabled)
+	if !z.Websocket.IsEnabled() && !z.API.AuthenticatedWebsocketSupport || !z.ValidateAPICredentials() || !canManipulateRealOrders {
+		t.Skip(wshandler.WebsocketNotEnabled)
 	}
-	var err error
+	z.WebsocketConn = &wshandler.WebsocketConnection{
+		ExchangeName:         z.Name,
+		URL:                  zbWebsocketAPI,
+		Verbose:              z.Verbose,
+		ResponseMaxLimit:     exchange.DefaultWebsocketResponseMaxLimit,
+		ResponseCheckTimeout: exchange.DefaultWebsocketResponseCheckTimeout,
+	}
 	var dialer websocket.Dialer
-	z.WebsocketConn, _, err = dialer.Dial(z.Websocket.GetWebsocketURL(),
-		http.Header{})
+	err := z.WebsocketConn.Dial(&dialer, http.Header{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	z.Websocket.DataHandler = make(chan interface{}, 11)
 	z.Websocket.TrafficAlert = make(chan struct{}, 11)
-	go z.WsHandleData()
+	go z.wsReadData()
 	wsSetupRan = true
 }
 
 func TestSpotNewOrder(t *testing.T) {
 	t.Parallel()
 
-	if z.APIKey == "" || z.APISecret == "" {
+	if !z.ValidateAPICredentials() || !canManipulateRealOrders {
 		t.Skip()
 	}
 
@@ -78,24 +93,22 @@ func TestSpotNewOrder(t *testing.T) {
 		Amount: 0.01,
 		Price:  10246.1,
 	}
-	orderid, err := z.SpotNewOrder(arg)
+	_, err := z.SpotNewOrder(arg)
 	if err != nil {
-		t.Errorf("Test failed - ZB SpotNewOrder: %s", err)
-	} else {
-		fmt.Println(orderid)
+		t.Errorf("ZB SpotNewOrder: %s", err)
 	}
 }
 
 func TestCancelExistingOrder(t *testing.T) {
 	t.Parallel()
 
-	if z.APIKey == "" || z.APISecret == "" {
+	if !z.ValidateAPICredentials() || !canManipulateRealOrders {
 		t.Skip()
 	}
 
 	err := z.CancelExistingOrder(20180629145864850, "btc_usdt")
 	if err != nil {
-		t.Errorf("Test failed - ZB CancelExistingOrder: %s", err)
+		t.Errorf("ZB CancelExistingOrder: %s", err)
 	}
 }
 
@@ -103,7 +116,7 @@ func TestGetLatestSpotPrice(t *testing.T) {
 	t.Parallel()
 	_, err := z.GetLatestSpotPrice("btc_usdt")
 	if err != nil {
-		t.Errorf("Test failed - ZB GetLatestSpotPrice: %s", err)
+		t.Errorf("ZB GetLatestSpotPrice: %s", err)
 	}
 }
 
@@ -111,7 +124,7 @@ func TestGetTicker(t *testing.T) {
 	t.Parallel()
 	_, err := z.GetTicker("btc_usdt")
 	if err != nil {
-		t.Errorf("Test failed - ZB GetTicker: %s", err)
+		t.Errorf("ZB GetTicker: %s", err)
 	}
 }
 
@@ -119,7 +132,7 @@ func TestGetTickers(t *testing.T) {
 	t.Parallel()
 	_, err := z.GetTickers()
 	if err != nil {
-		t.Errorf("Test failed - ZB GetTicker: %s", err)
+		t.Errorf("ZB GetTicker: %s", err)
 	}
 }
 
@@ -127,7 +140,7 @@ func TestGetOrderbook(t *testing.T) {
 	t.Parallel()
 	_, err := z.GetOrderbook("btc_usdt")
 	if err != nil {
-		t.Errorf("Test failed - ZB GetTicker: %s", err)
+		t.Errorf("ZB GetTicker: %s", err)
 	}
 }
 
@@ -135,7 +148,7 @@ func TestGetMarkets(t *testing.T) {
 	t.Parallel()
 	_, err := z.GetMarkets()
 	if err != nil {
-		t.Errorf("Test failed - ZB GetMarkets: %s", err)
+		t.Errorf("ZB GetMarkets: %s", err)
 	}
 }
 
@@ -149,7 +162,7 @@ func TestGetSpotKline(t *testing.T) {
 	}
 	_, err := z.GetSpotKline(arg)
 	if err != nil {
-		t.Errorf("Test failed - ZB GetSpotKline: %s", err)
+		t.Errorf("ZB GetSpotKline: %s", err)
 	}
 }
 
@@ -170,7 +183,7 @@ func setFeeBuilder() *exchange.FeeBuilder {
 func TestGetFeeByTypeOfflineTradeFee(t *testing.T) {
 	var feeBuilder = setFeeBuilder()
 	z.GetFeeByType(feeBuilder)
-	if apiKey == "" || apiSecret == "" {
+	if !z.ValidateAPICredentials() {
 		if feeBuilder.FeeType != exchange.OfflineTradeFee {
 			t.Errorf("Expected %v, received %v", exchange.OfflineTradeFee, feeBuilder.FeeType)
 		}
@@ -182,14 +195,12 @@ func TestGetFeeByTypeOfflineTradeFee(t *testing.T) {
 }
 
 func TestGetFee(t *testing.T) {
-	z.SetDefaults()
-	TestSetup(t)
 	var feeBuilder = setFeeBuilder()
 
 	// CryptocurrencyTradeFee Basic
 	if resp, err := z.GetFee(feeBuilder); resp != float64(0.002) || err != nil {
 		t.Error(err)
-		t.Errorf("Test Failed - GetFee() error. Expected: %f, Received: %f", float64(0.0015), resp)
+		t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(0.0015), resp)
 	}
 
 	// CryptocurrencyTradeFee High quantity
@@ -197,7 +208,7 @@ func TestGetFee(t *testing.T) {
 	feeBuilder.Amount = 1000
 	feeBuilder.PurchasePrice = 1000
 	if resp, err := z.GetFee(feeBuilder); resp != float64(2000) || err != nil {
-		t.Errorf("Test Failed - GetFee() error. Expected: %f, Received: %f", float64(2000), resp)
+		t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(2000), resp)
 		t.Error(err)
 	}
 
@@ -205,7 +216,7 @@ func TestGetFee(t *testing.T) {
 	feeBuilder = setFeeBuilder()
 	feeBuilder.IsMaker = true
 	if resp, err := z.GetFee(feeBuilder); resp != float64(0.002) || err != nil {
-		t.Errorf("Test Failed - GetFee() error. Expected: %f, Received: %f", float64(0.002), resp)
+		t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(0.002), resp)
 		t.Error(err)
 	}
 
@@ -213,14 +224,14 @@ func TestGetFee(t *testing.T) {
 	feeBuilder = setFeeBuilder()
 	feeBuilder.PurchasePrice = -1000
 	if resp, err := z.GetFee(feeBuilder); resp != float64(0) || err != nil {
-		t.Errorf("Test Failed - GetFee() error. Expected: %f, Received: %f", float64(0), resp)
+		t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(0), resp)
 		t.Error(err)
 	}
 	// CryptocurrencyWithdrawalFee Basic
 	feeBuilder = setFeeBuilder()
 	feeBuilder.FeeType = exchange.CryptocurrencyWithdrawalFee
 	if resp, err := z.GetFee(feeBuilder); resp != float64(0.005) || err != nil {
-		t.Errorf("Test Failed - GetFee() error. Expected: %f, Received: %f", float64(0.005), resp)
+		t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(0.005), resp)
 		t.Error(err)
 	}
 
@@ -229,7 +240,7 @@ func TestGetFee(t *testing.T) {
 	feeBuilder.Pair.Base = currency.NewCode("hello")
 	feeBuilder.FeeType = exchange.CryptocurrencyWithdrawalFee
 	if resp, err := z.GetFee(feeBuilder); resp != float64(0) || err != nil {
-		t.Errorf("Test Failed - GetFee() error. Expected: %f, Received: %f", float64(0), resp)
+		t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(0), resp)
 		t.Error(err)
 	}
 
@@ -237,7 +248,7 @@ func TestGetFee(t *testing.T) {
 	feeBuilder = setFeeBuilder()
 	feeBuilder.FeeType = exchange.CyptocurrencyDepositFee
 	if resp, err := z.GetFee(feeBuilder); resp != float64(0) || err != nil {
-		t.Errorf("Test Failed - GetFee() error. Expected: %f, Received: %f", float64(0), resp)
+		t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(0), resp)
 		t.Error(err)
 	}
 
@@ -245,7 +256,7 @@ func TestGetFee(t *testing.T) {
 	feeBuilder = setFeeBuilder()
 	feeBuilder.FeeType = exchange.InternationalBankDepositFee
 	if resp, err := z.GetFee(feeBuilder); resp != float64(0) || err != nil {
-		t.Errorf("Test Failed - GetFee() error. Expected: %f, Received: %f", float64(0), resp)
+		t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(0), resp)
 		t.Error(err)
 	}
 
@@ -254,210 +265,183 @@ func TestGetFee(t *testing.T) {
 	feeBuilder.FeeType = exchange.InternationalBankWithdrawalFee
 	feeBuilder.FiatCurrency = currency.USD
 	if resp, err := z.GetFee(feeBuilder); resp != float64(0) || err != nil {
-		t.Errorf("Test Failed - GetFee() error. Expected: %f, Received: %f", float64(0), resp)
+		t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(0), resp)
 		t.Error(err)
 	}
 }
 
 func TestFormatWithdrawPermissions(t *testing.T) {
-	z.SetDefaults()
 	expectedResult := exchange.AutoWithdrawCryptoText + " & " + exchange.NoFiatWithdrawalsText
-
 	withdrawPermissions := z.FormatWithdrawPermissions()
-
 	if withdrawPermissions != expectedResult {
 		t.Errorf("Expected: %s, Received: %s", expectedResult, withdrawPermissions)
 	}
 }
 
 func TestGetActiveOrders(t *testing.T) {
-	z.SetDefaults()
-	TestSetup(t)
-
-	var getOrdersRequest = exchange.GetOrdersRequest{
-		OrderType: exchange.AnyOrderType,
-		Currencies: []currency.Pair{currency.NewPair(currency.LTC,
-			currency.BTC)},
+	var getOrdersRequest = order.GetOrdersRequest{
+		Type: order.AnyType,
+		Pairs: []currency.Pair{currency.NewPair(currency.XRP,
+			currency.USDT)},
 	}
 
 	_, err := z.GetActiveOrders(&getOrdersRequest)
-	if areTestAPIKeysSet() && err != nil {
+	if z.ValidateAPICredentials() && err != nil {
 		t.Errorf("Could not get open orders: %s", err)
-	} else if !areTestAPIKeysSet() && err == nil {
+	} else if !z.ValidateAPICredentials() && err == nil {
 		t.Error("Expecting an error when no keys are set")
 	}
 }
 
 func TestGetOrderHistory(t *testing.T) {
-	z.SetDefaults()
-	TestSetup(t)
-
-	var getOrdersRequest = exchange.GetOrdersRequest{
-		OrderType: exchange.AnyOrderType,
-		OrderSide: exchange.BuyOrderSide,
-		Currencies: []currency.Pair{currency.NewPair(currency.LTC,
+	var getOrdersRequest = order.GetOrdersRequest{
+		Type: order.AnyType,
+		Side: order.Buy,
+		Pairs: []currency.Pair{currency.NewPair(currency.LTC,
 			currency.BTC)},
 	}
 
 	_, err := z.GetOrderHistory(&getOrdersRequest)
-	if areTestAPIKeysSet() && err != nil {
+	if z.ValidateAPICredentials() && err != nil {
 		t.Errorf("Could not get order history: %s", err)
-	} else if !areTestAPIKeysSet() && err == nil {
+	} else if !z.ValidateAPICredentials() && err == nil {
 		t.Error("Expecting an error when no keys are set")
 	}
 }
 
 // Any tests below this line have the ability to impact your orders on the exchange. Enable canManipulateRealOrders to run them
 // ----------------------------------------------------------------------------------------------------------------------------
-func areTestAPIKeysSet() bool {
-	if z.APIKey != "" && z.APIKey != "Key" &&
-		z.APISecret != "" && z.APISecret != "Secret" {
-		return true
-	}
-	return false
-}
 
 func TestSubmitOrder(t *testing.T) {
-	z.SetDefaults()
-	TestSetup(t)
-
-	if areTestAPIKeysSet() && !canManipulateRealOrders {
+	if z.ValidateAPICredentials() && !canManipulateRealOrders {
 		t.Skip(fmt.Sprintf("ApiKey: %s. Can place orders: %v",
-			z.APIKey,
+			z.API.Credentials.Key,
 			canManipulateRealOrders))
 	}
-	var pair = currency.Pair{
-		Delimiter: "_",
-		Base:      currency.QTUM,
-		Quote:     currency.USDT,
+
+	var orderSubmission = &order.Submit{
+		Pair: currency.Pair{
+			Delimiter: "_",
+			Base:      currency.XRP,
+			Quote:     currency.USDT,
+		},
+		Side:     order.Buy,
+		Type:     order.Limit,
+		Price:    1,
+		Amount:   1,
+		ClientID: "meowOrder",
 	}
-
-	response, err := z.SubmitOrder(pair,
-		exchange.BuyOrderSide,
-		exchange.MarketOrderType,
-		1,
-		10,
-		"hi")
-
-	if areTestAPIKeysSet() && (err != nil || !response.IsOrderPlaced) {
+	response, err := z.SubmitOrder(orderSubmission)
+	if z.ValidateAPICredentials() && (err != nil || !response.IsOrderPlaced) {
 		t.Errorf("Order failed to be placed: %v", err)
-	} else if !areTestAPIKeysSet() && err == nil {
+	} else if !z.ValidateAPICredentials() && err == nil {
 		t.Error("Expecting an error when no keys are set")
 	}
 }
 
 func TestCancelExchangeOrder(t *testing.T) {
-	z.SetDefaults()
-	TestSetup(t)
-
-	if areTestAPIKeysSet() && !canManipulateRealOrders {
+	if z.ValidateAPICredentials() && !canManipulateRealOrders {
 		t.Skip("API keys set, canManipulateRealOrders false, skipping test")
 	}
 
-	currencyPair := currency.NewPair(currency.LTC, currency.BTC)
-
-	var orderCancellation = &exchange.OrderCancellation{
-		OrderID:       "1",
-		WalletAddress: "1F5zVDgNjorJ51oGebSvNCrSAHpwGkUdDB",
+	currencyPair := currency.NewPair(currency.XRP, currency.USDT)
+	var orderCancellation = &order.Cancel{
+		ID:            "1",
+		WalletAddress: core.BitcoinDonationAddress,
 		AccountID:     "1",
-		CurrencyPair:  currencyPair,
+		Pair:          currencyPair,
 	}
 
 	err := z.CancelOrder(orderCancellation)
-	if !areTestAPIKeysSet() && err == nil {
+	if !z.ValidateAPICredentials() && err == nil {
 		t.Error("Expecting an error when no keys are set")
 	}
-	if areTestAPIKeysSet() && err != nil {
+	if z.ValidateAPICredentials() && err != nil {
 		t.Errorf("Could not cancel orders: %v", err)
 	}
 }
 
 func TestCancelAllExchangeOrders(t *testing.T) {
-	z.SetDefaults()
-	TestSetup(t)
-
-	if areTestAPIKeysSet() && !canManipulateRealOrders {
+	if z.ValidateAPICredentials() && !canManipulateRealOrders {
 		t.Skip("API keys set, canManipulateRealOrders false, skipping test")
 	}
 
-	currencyPair := currency.NewPair(currency.LTC, currency.BTC)
-
-	var orderCancellation = &exchange.OrderCancellation{
-		OrderID:       "1",
-		WalletAddress: "1F5zVDgNjorJ51oGebSvNCrSAHpwGkUdDB",
+	currencyPair := currency.NewPair(currency.XRP, currency.USDT)
+	var orderCancellation = &order.Cancel{
+		ID:            "1",
+		WalletAddress: core.BitcoinDonationAddress,
 		AccountID:     "1",
-		CurrencyPair:  currencyPair,
+		Pair:          currencyPair,
 	}
 
 	resp, err := z.CancelAllOrders(orderCancellation)
 
-	if !areTestAPIKeysSet() && err == nil {
+	if !z.ValidateAPICredentials() && err == nil {
 		t.Error("Expecting an error when no keys are set")
 	}
-	if areTestAPIKeysSet() && err != nil {
+	if z.ValidateAPICredentials() && err != nil {
 		t.Errorf("Could not cancel orders: %v", err)
 	}
 
-	if len(resp.OrderStatus) > 0 {
-		t.Errorf("%v orders failed to cancel", len(resp.OrderStatus))
+	if len(resp.Status) > 0 {
+		t.Errorf("%v orders failed to cancel", len(resp.Status))
 	}
 }
 
 func TestGetAccountInfo(t *testing.T) {
-	if apiKey != "" || apiSecret != "" {
-		_, err := z.GetAccountInfo()
+	if z.ValidateAPICredentials() {
+		_, err := z.UpdateAccountInfo()
 		if err != nil {
-			t.Error("Test Failed - GetAccountInfo() error", err)
+			t.Error("GetAccountInfo() error", err)
 		}
 	} else {
-		_, err := z.GetAccountInfo()
+		_, err := z.UpdateAccountInfo()
 		if err == nil {
-			t.Error("Test Failed - GetAccountInfo() error")
+			t.Error("GetAccountInfo() Expected error")
 		}
 	}
 }
 
 func TestModifyOrder(t *testing.T) {
-	_, err := z.ModifyOrder(&exchange.ModifyOrder{})
+	if z.ValidateAPICredentials() && !canManipulateRealOrders {
+		t.Skip("API keys set, canManipulateRealOrders false, skipping test")
+	}
+	_, err := z.ModifyOrder(&order.Modify{})
 	if err == nil {
-		t.Error("Test failed - ModifyOrder() error")
+		t.Error("ModifyOrder() Expected error")
 	}
 }
 
 func TestWithdraw(t *testing.T) {
-	z.SetDefaults()
-	TestSetup(t)
-	var withdrawCryptoRequest = exchange.WithdrawRequest{
-		Amount:      100,
+	withdrawCryptoRequest := withdraw.Request{
+		Crypto: &withdraw.CryptoRequest{
+			Address:   core.BitcoinDonationAddress,
+			FeeAmount: 1,
+		},
+		Amount:      -1,
 		Currency:    currency.BTC,
-		Address:     "1F5zVDgNjorJ51oGebSvNCrSAHpwGkUdDB",
 		Description: "WITHDRAW IT ALL",
-		FeeAmount:   1,
 	}
 
-	if areTestAPIKeysSet() && !canManipulateRealOrders {
+	if z.ValidateAPICredentials() && !canManipulateRealOrders {
 		t.Skip("API keys set, canManipulateRealOrders false, skipping test")
 	}
 
 	_, err := z.WithdrawCryptocurrencyFunds(&withdrawCryptoRequest)
-	if !areTestAPIKeysSet() && err == nil {
+	if !z.ValidateAPICredentials() && err == nil {
 		t.Error("Expecting an error when no keys are set")
 	}
-	if areTestAPIKeysSet() && err != nil {
+	if z.ValidateAPICredentials() && err != nil {
 		t.Errorf("Withdraw failed to be placed: %v", err)
 	}
 }
 
 func TestWithdrawFiat(t *testing.T) {
-	z.SetDefaults()
-	TestSetup(t)
-
-	if areTestAPIKeysSet() && !canManipulateRealOrders {
+	if z.ValidateAPICredentials() && !canManipulateRealOrders {
 		t.Skip("API keys set, canManipulateRealOrders false, skipping test")
 	}
 
-	var withdrawFiatRequest = exchange.WithdrawRequest{}
-
+	var withdrawFiatRequest = withdraw.Request{}
 	_, err := z.WithdrawFiatFunds(&withdrawFiatRequest)
 	if err != common.ErrFunctionNotSupported {
 		t.Errorf("Expected '%v', received: '%v'", common.ErrFunctionNotSupported, err)
@@ -465,15 +449,11 @@ func TestWithdrawFiat(t *testing.T) {
 }
 
 func TestWithdrawInternationalBank(t *testing.T) {
-	z.SetDefaults()
-	TestSetup(t)
-
-	if areTestAPIKeysSet() && !canManipulateRealOrders {
+	if z.ValidateAPICredentials() && !canManipulateRealOrders {
 		t.Skip("API keys set, canManipulateRealOrders false, skipping test")
 	}
 
-	var withdrawFiatRequest = exchange.WithdrawRequest{}
-
+	var withdrawFiatRequest = withdraw.Request{}
 	_, err := z.WithdrawFiatFundsToInternationalBank(&withdrawFiatRequest)
 	if err != common.ErrFunctionNotSupported {
 		t.Errorf("Expected '%v', received: '%v'", common.ErrFunctionNotSupported, err)
@@ -481,16 +461,16 @@ func TestWithdrawInternationalBank(t *testing.T) {
 }
 
 func TestGetDepositAddress(t *testing.T) {
-	if apiKey != "" || apiSecret != "" {
+	if z.ValidateAPICredentials() {
 		_, err := z.GetDepositAddress(currency.BTC, "")
 		if err != nil {
-			t.Error("Test Failed - GetDepositAddress() error PLEASE MAKE SURE YOU CREATE DEPOSIT ADDRESSES VIA ZB.COM",
+			t.Error("GetDepositAddress() error PLEASE MAKE SURE YOU CREATE DEPOSIT ADDRESSES VIA ZB.COM",
 				err)
 		}
 	} else {
 		_, err := z.GetDepositAddress(currency.BTC, "")
 		if err == nil {
-			t.Error("Test Failed - GetDepositAddress() error")
+			t.Error("GetDepositAddress() Expected error")
 		}
 	}
 }
@@ -498,229 +478,363 @@ func TestGetDepositAddress(t *testing.T) {
 // TestZBInvalidJSON ZB sends poorly formed JSON. this tests the JSON fixer
 // Then JSON decode it to test if successful
 func TestZBInvalidJSON(t *testing.T) {
-	json := `{"success":true,"code":1000,"channel":"getSubUserList","message":"[{"isOpenApi":false,"memo":"Memo","userName":"hello@imgoodthanksandyou.com@good","userId":1337,"isFreez":false}]","no":"0"}`
-	fixedJSON := z.wsFixInvalidJSON([]byte(json))
+	data := `{"success":true,"code":1000,"channel":"getSubUserList","message":"[{"isOpenApi":false,"memo":"Memo","userName":"hello@imgoodthanksandyou.com@good","userId":1337,"isFreez":false}]","no":"0"}`
+	fixedJSON := z.wsFixInvalidJSON([]byte(data))
 	var response WsGetSubUserListResponse
-	err := common.JSONDecode(fixedJSON, &response)
+	err := json.Unmarshal(fixedJSON, &response)
 	if err != nil {
-		t.Log(err)
+		t.Fatal(err)
 	}
 	if response.Message[0].UserID != 1337 {
-		t.Error("Expected extracted JSON USERID to equal 1337")
+		t.Fatal("Expected extracted JSON USERID to equal 1337")
 	}
 
-	json = `{"success":true,"code":1000,"channel":"createSubUserKey","message":"{"apiKey":"thisisnotareallykeyyousillybilly","apiSecret":"lol"}","no":"14728151154382111746154"}`
-	fixedJSON = z.wsFixInvalidJSON([]byte(json))
+	data = `{"success":true,"code":1000,"channel":"createSubUserKey","message":"{"apiKey":"thisisnotareallykeyyousillybilly","apiSecret":"lol"}","no":"123"}`
+	fixedJSON = z.wsFixInvalidJSON([]byte(data))
 	var response2 WsRequestResponse
-	err = common.JSONDecode(fixedJSON, &response2)
+	err = json.Unmarshal(fixedJSON, &response2)
 	if err != nil {
-		t.Log(err)
+		t.Error(err)
 	}
 }
 
 // TestWsTransferFunds ws test
 func TestWsTransferFunds(t *testing.T) {
 	setupWsAuth(t)
-	err := z.wsDoTransferFunds(currency.BTC,
+	_, err := z.wsDoTransferFunds(currency.BTC,
 		0.0001,
 		"username1",
 		"username2",
 	)
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
-	timer := time.NewTimer(sharedtestvalues.WebsocketResponseDefaultTimeout)
-	select {
-	case resp := <-z.Websocket.DataHandler:
-		if resp.(WsRequestResponse).Code == 1002 || resp.(WsRequestResponse).Code == 1003 {
-			t.Error("Hash not calculated correctly")
-		}
-	case <-timer.C:
-		t.Error("Have not received a response")
-	}
-	timer.Stop()
-}
-
-// TestWsCreateSuUserKey ws test
-func TestWsCreateSuUserKey(t *testing.T) {
-	setupWsAuth(t)
-	z.wsGetSubUserList()
-	timer := time.NewTimer(sharedtestvalues.WebsocketResponseDefaultTimeout)
-	var userID int64
-	select {
-	case resp := <-z.Websocket.DataHandler:
-		if len(resp.(WsGetSubUserListResponse).Message) == 0 {
-			t.Fatal("Expected a userID. Ensure you have made a subuserID before running this test")
-		}
-		userID = resp.(WsGetSubUserListResponse).Message[0].UserID
-	case <-timer.C:
-		t.Fatal("Have not received a response")
-	}
-	timer.Stop()
-	err := z.wsCreateSubUserKey(true, true, true, true, "subu", fmt.Sprintf("%v", userID))
-	if err != nil {
-		t.Error(err)
-	}
-	timer = time.NewTimer(sharedtestvalues.WebsocketResponseDefaultTimeout)
-	select {
-	case resp := <-z.Websocket.DataHandler:
-		if resp.(WsRequestResponse).Code == 1002 || resp.(WsRequestResponse).Code == 1003 {
-			t.Error("Hash not calculated correctly")
-		}
-	case <-timer.C:
-		t.Error("Have not received a response")
-	}
-	timer.Stop()
 }
 
 // TestGetSubUserList ws test
 func TestGetSubUserList(t *testing.T) {
 	setupWsAuth(t)
-	err := z.wsGetSubUserList()
+	_, err := z.wsGetSubUserList()
 	if err != nil {
 		t.Fatal(err)
 	}
-	timer := time.NewTimer(sharedtestvalues.WebsocketResponseDefaultTimeout)
-	select {
-	case resp := <-z.Websocket.DataHandler:
-		if resp.(WsGetSubUserListResponse).Code == 1002 || resp.(WsGetSubUserListResponse).Code == 1003 {
-			t.Error("Hash not calculated correctly")
-		}
-	case <-timer.C:
-		t.Error("Have not received a response")
-	}
-	timer.Stop()
 }
 
 // TestAddSubUser ws test
 func TestAddSubUser(t *testing.T) {
 	setupWsAuth(t)
-	err := z.wsAddSubUser("abcde", "123456789101112aA!")
+	_, err := z.wsAddSubUser("1", "123456789101112aA!")
 	if err != nil {
 		t.Fatal(err)
 	}
-	timer := time.NewTimer(sharedtestvalues.WebsocketResponseDefaultTimeout)
-	select {
-	case resp := <-z.Websocket.DataHandler:
-		if resp.(WsRequestResponse).Code == 1002 || resp.(WsRequestResponse).Code == 1003 {
-			t.Error("Hash not calculated correctly")
-		}
-	case <-timer.C:
-		t.Error("Have not received a response")
+}
+
+// TestWsCreateSuUserKey ws test
+func TestWsCreateSuUserKey(t *testing.T) {
+	setupWsAuth(t)
+	subUsers, err := z.wsGetSubUserList()
+	if err != nil {
+		t.Fatal(err)
 	}
-	timer.Stop()
+	if len(subUsers.Message) == 0 {
+		t.Skip("User ID required for test to continue. Create a subuser first")
+	}
+	userID := subUsers.Message[0].UserID
+	_, err = z.wsCreateSubUserKey(true, true, true, true, "subu", strconv.FormatInt(userID, 10))
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 // TestWsSubmitOrder ws test
 func TestWsSubmitOrder(t *testing.T) {
 	setupWsAuth(t)
-	err := z.wsSubmitOrder(currency.NewPairWithDelimiter(currency.LTC.String(), currency.BTC.String(), "").Lower(), 1, 1, 1)
+	_, err := z.wsSubmitOrder(currency.NewPairWithDelimiter(currency.LTC.String(), currency.BTC.String(), "").Lower(), 1, 1, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	timer := time.NewTimer(sharedtestvalues.WebsocketResponseDefaultTimeout)
-	select {
-	case resp := <-z.Websocket.DataHandler:
-		if resp.(WsSubmitOrderResponse).Code == 1002 || resp.(WsSubmitOrderResponse).Code == 1003 {
-			t.Error("Hash not calculated correctly")
-		}
-	case <-timer.C:
-		t.Error("Have not received a response")
-	}
-	timer.Stop()
 }
 
 // TestWsCancelOrder ws test
 func TestWsCancelOrder(t *testing.T) {
 	setupWsAuth(t)
-	err := z.wsCancelOrder(currency.NewPairWithDelimiter(currency.LTC.String(), currency.BTC.String(), "").Lower(), 1234)
+	_, err := z.wsCancelOrder(currency.NewPairWithDelimiter(currency.LTC.String(), currency.BTC.String(), "").Lower(), 1234)
 	if err != nil {
 		t.Fatal(err)
 	}
-	timer := time.NewTimer(sharedtestvalues.WebsocketResponseDefaultTimeout)
-	select {
-	case resp := <-z.Websocket.DataHandler:
-		if resp.(WsCancelOrderResponse).Code == 1002 || resp.(WsCancelOrderResponse).Code == 1003 {
-			t.Error("Hash not calculated correctly")
-		}
-	case <-timer.C:
-		t.Error("Have not received a response")
-	}
-	timer.Stop()
 }
 
 // TestWsGetAccountInfo ws test
 func TestWsGetAccountInfo(t *testing.T) {
 	setupWsAuth(t)
-	err := z.wsGetAccountInfoRequest()
+	_, err := z.wsGetAccountInfoRequest()
 	if err != nil {
 		t.Fatal(err)
 	}
-	timer := time.NewTimer(sharedtestvalues.WebsocketResponseDefaultTimeout)
-	select {
-	case resp := <-z.Websocket.DataHandler:
-		if resp.(WsGetAccountInfoResponse).Code == 1002 || resp.(WsGetAccountInfoResponse).Code == 1003 {
-			t.Error("Hash not calculated correctly")
-		}
-	case <-timer.C:
-		t.Error("Have not received a response")
-	}
-	timer.Stop()
 }
 
 // TestWsGetOrder ws test
 func TestWsGetOrder(t *testing.T) {
 	setupWsAuth(t)
-	err := z.wsGetOrder(currency.NewPairWithDelimiter(currency.LTC.String(), currency.BTC.String(), "").Lower(), 1234)
+	_, err := z.wsGetOrder(currency.NewPairWithDelimiter(currency.LTC.String(), currency.BTC.String(), "").Lower(), 1234)
 	if err != nil {
 		t.Fatal(err)
 	}
-	timer := time.NewTimer(sharedtestvalues.WebsocketResponseDefaultTimeout)
-	select {
-	case resp := <-z.Websocket.DataHandler:
-		if resp.(WsGetOrderResponse).Code == 1002 || resp.(WsGetOrderResponse).Code == 1003 {
-			t.Error("Hash not calculated correctly")
-		}
-	case <-timer.C:
-		t.Error("Have not received a response")
-	}
-	timer.Stop()
 }
 
 // TestWsGetOrders ws test
 func TestWsGetOrders(t *testing.T) {
 	setupWsAuth(t)
-	err := z.wsGetOrders(currency.NewPairWithDelimiter(currency.LTC.String(), currency.BTC.String(), "").Lower(), 1, 1)
+	_, err := z.wsGetOrders(currency.NewPairWithDelimiter(currency.LTC.String(), currency.BTC.String(), "").Lower(), 1, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	timer := time.NewTimer(sharedtestvalues.WebsocketResponseDefaultTimeout)
-	select {
-	case resp := <-z.Websocket.DataHandler:
-		if resp.(WsGetOrdersResponse).Code == 1002 || resp.(WsGetOrdersResponse).Code == 1003 {
-			t.Error("Hash not calculated correctly")
-		}
-	case <-timer.C:
-		t.Error("Have not received a response")
-	}
-	timer.Stop()
 }
 
 // TestWsGetOrdersIgnoreTradeType ws test
 func TestWsGetOrdersIgnoreTradeType(t *testing.T) {
 	setupWsAuth(t)
-	err := z.wsGetOrdersIgnoreTradeType(currency.NewPairWithDelimiter(currency.LTC.String(), currency.BTC.String(), "").Lower(), 1, 1)
+	_, err := z.wsGetOrdersIgnoreTradeType(currency.NewPairWithDelimiter(currency.LTC.String(), currency.BTC.String(), "").Lower(), 1, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	timer := time.NewTimer(sharedtestvalues.WebsocketResponseDefaultTimeout)
-	select {
-	case resp := <-z.Websocket.DataHandler:
-		if resp.(WsGetOrdersResponse).Code == 1002 || resp.(WsGetOrdersResponse).Code == 1003 {
-			t.Error("Hash not calculated correctly")
-		}
-	case <-timer.C:
-		t.Error("Have not received a response")
+}
+
+func TestWsMarketConfig(t *testing.T) {
+	pressXToJSON := []byte(`{
+    "code":1000,
+    "data":{
+        "btc_usdt":{
+            "amountScale":4,
+            "priceScale":2
+            },
+        "bcc_usdt":{
+            "amountScale":3,
+            "priceScale":2
+            }
+    },
+    "success":true,
+    "channel":"markets",
+    "message":"操作成功。"
+}`)
+	err := z.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
 	}
-	timer.Stop()
+}
+
+func TestWsTicker(t *testing.T) {
+	pressXToJSON := []byte(`{
+    "channel": "ltcbtc_ticker",
+    "date": "1472800466093",
+    "no": "1337",
+    "ticker": {
+        "buy": "3826.94",
+        "high": "3838.22",
+        "last": "3826.94",
+        "low": "3802.0",
+        "sell": "3828.25",
+        "vol": "90151.83"
+    }
+}`)
+	err := z.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestWsOrderbook(t *testing.T) {
+	pressXToJSON := []byte(`{
+    "asks": [
+        [
+            3846.94,
+            0.659
+        ]
+    ],
+    "bids": [
+        [
+            3826.94,
+            4.843
+        ]
+    ],
+    "channel": "ltcbtc_depth",
+    "no": "1337"
+}`)
+	err := z.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestWsTrades(t *testing.T) {
+	pressXToJSON := []byte(`{"data":[{"date":1581473835,"amount":"13.620","price":"242.89","trade_type":"bid","type":"buy","tid":703896035},{"date":1581473835,"amount":"0.156","price":"242.89","trade_type":"bid","type":"buy","tid":703896036}],"dataType":"trades","channel":"ethusdt_trades"}`)
+	err := z.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestWsPlaceOrderJSON(t *testing.T) {
+	pressXToJSON := []byte(`{"message":"操作成功。","no":"1337","data":"{"entrustId":201711133673}","code":1000,"channel":"btcusdt_order","success":true}`)
+	err := z.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestWsCancelOrderJSON(t *testing.T) {
+	pressXToJSON := []byte(`{
+    "success": true,
+    "code": 1000,
+    "channel": "ltcbtc_cancelorder",
+    "message": "操作成功。",
+    "no": "1337"
+}`)
+	err := z.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestWsGetOrderJSON(t *testing.T) {
+	pressXToJSON := []byte(`{
+    "success": true,
+    "code": 1000,
+    "data": {
+        "currency": "ltc_btc",
+        "id": "20160902387645980",
+        "price": 100,
+        "status": 0,
+        "total_amount": 0.01,
+        "trade_amount": 0,
+        "trade_date": 1472814905567,
+        "trade_money": 0,
+        "type": 1
+    },
+    "channel": "ltcbtc_getorder",
+    "message": "操作成功。",
+    "no": "1337"
+}`)
+	err := z.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestWsGetOrdersJSON(t *testing.T) {
+	pressXToJSON := []byte(`{
+    "success": true,
+    "code": 1000,
+    "data": [
+        {
+           "currency": "ltc_btc",
+           "id": "20160901385862136",
+           "price": 3700,
+           "status": 0,
+           "total_amount": 1.845,
+           "trade_amount": 0,
+           "trade_date": 1472706387742,
+           "trade_money": 0,
+           "type": 1
+        }
+    ],
+    "channel": "ltcbtc_getorders",
+    "message": "操作成功。",
+    "no": "1337"
+}`)
+	err := z.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestWsGetOrderIgnoreTypeJSON(t *testing.T) {
+	pressXToJSON := []byte(`{
+    "success": true,
+    "code": 1000,
+    "data": [
+        {
+            "currency": "ltc_btc",
+            "id": "20160901385862136",
+            "price": 3700,
+            "status": 0,
+            "total_amount": 1.845,
+            "trade_amount": 0,
+            "trade_date": 1472706387742,
+            "trade_money": 0,
+            "type": 1
+        }
+    ],
+    "channel": "ltcbtc_getordersignoretradetype",
+    "message": "操作成功。",
+    "no": "1337"
+}`)
+	err := z.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestWsGetUserInfo(t *testing.T) {
+	pressXToJSON := []byte(`{
+    "message": "操作成功",
+    "no": "15207605119",
+    "data": {
+        "coins": [
+            {
+                "freez": "1.35828369",
+                "enName": "BTC",
+                "unitDecimal": 8,
+                "cnName": "BTC",
+                "unitTag": "฿",
+                "available": "0.72771906",
+                "key": "btc"
+            },
+            {
+                "freez": "0.011",
+                "enName": "LTC",
+                "unitDecimal": 8,
+                "cnName": "LTC",
+                "unitTag": "Ł",
+                "available": "3.51859814",
+                "key": "ltc"
+            }
+        ],
+        "base": {
+            "username": "15207605119",
+            "trade_password_enabled": true,
+            "auth_google_enabled": true,
+            "auth_mobile_enabled": true
+        }
+    },
+    "code": 1000,
+    "channel": "getaccountinfo",
+    "success": true
+}`)
+	err := z.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestWsGetSubUsersResponse(t *testing.T) {
+	pressXToJSON := []byte(`{"success": true,"code": 1000,"channel": "getSubUserList","message": "[{"isOpenApi": false,"memo": "1","userName": "15914665280@1","userId": 110980,"isFreez": false}, {"isOpenApi": false,"memo": "2","userName": "15914665280@2","userId": 110984,"isFreez": false}, {"isOpenApi": false,"memo": "test3","userName": "15914665280@3","userId": 111014,"isFreez": false}]","no": "0"}`)
+	err := z.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestWsCreateSubUserResponse(t *testing.T) {
+	pressXToJSON := []byte(`{
+	"success": true,
+	"code": 1000,
+	"channel": "createSubUserKey",
+	"message": "{"apiKey ":"41 bf75f9 - 525e-4876 - 8257 - b880a938d4d2 ","apiSecret ":"046 b4706fe88b5728991274962d7fc46b4779c0c"}",
+	"no": "1337"
+}`)
+	err := z.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
 }

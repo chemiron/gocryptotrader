@@ -4,18 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/thrasher-/gocryptotrader/currency"
-)
-
-// SpotNewOrderRequestParamsType order type (buy or sell)
-type SpotNewOrderRequestParamsType string
-
-var (
-	// SpotNewOrderRequestParamsTypeBuy buy order
-	SpotNewOrderRequestParamsTypeBuy = SpotNewOrderRequestParamsType("buy")
-
-	// SpotNewOrderRequestParamsTypeSell sell order
-	SpotNewOrderRequestParamsTypeSell = SpotNewOrderRequestParamsType("sell")
+	"github.com/thrasher-corp/gocryptotrader/currency"
 )
 
 // TimeInterval Interval represents interval enum.
@@ -33,14 +22,6 @@ var (
 	TimeIntervalFourHours      = TimeInterval(4 * 60 * 60)
 	TimeIntervalSixHours       = TimeInterval(6 * 60 * 60)
 	TimeIntervalDay            = TimeInterval(60 * 60 * 24)
-)
-
-// IDs for requests
-const (
-	IDGeneric    = 0000
-	IDSignIn     = 1010
-	IDBalance    = 2000
-	IDOrderQuery = 3001
 )
 
 // MarketInfoResponse holds the market info data
@@ -89,15 +70,15 @@ type KLineResponse struct {
 
 // TickerResponse  holds the ticker response data
 type TickerResponse struct {
-	Result        string  `json:"result"`
-	Volume        float64 `json:"baseVolume,string"`    // Trading volume
-	High          float64 `json:"high24hr,string"`      // 24 hour high price
-	Open          float64 `json:"highestBid,string"`    // Openening price
-	Last          float64 `json:"last,string"`          // Last price
-	Low           float64 `json:"low24hr,string"`       // 24 hour low price
-	Close         float64 `json:"lowestAsk,string"`     // Closing price
-	PercentChange float64 `json:"percentChange,string"` // Percentage change
-	QuoteVolume   float64 `json:"quoteVolume,string"`   // Quote currency volume
+	Period      int64   `json:"period"`
+	BaseVolume  float64 `json:"baseVolume,string"`
+	Change      float64 `json:"change,string"`
+	Close       float64 `json:"close,string"`
+	High        float64 `json:"high,string"`
+	Last        float64 `json:"last,string"`
+	Low         float64 `json:"low,string"`
+	Open        float64 `json:"open,string"`
+	QuoteVolume float64 `json:"quoteVolume,string"`
 }
 
 // OrderbookResponse stores the orderbook data
@@ -124,10 +105,10 @@ type Orderbook struct {
 
 // SpotNewOrderRequestParams Order params
 type SpotNewOrderRequestParams struct {
-	Amount float64                       `json:"amount"` // Order quantity
-	Price  float64                       `json:"price"`  // Order price
-	Symbol string                        `json:"symbol"` // Trading pair; btc_usdt, eth_btc......
-	Type   SpotNewOrderRequestParamsType `json:"type"`   // Order type (buy or sell),
+	Amount float64 `json:"amount"` // Order quantity
+	Price  float64 `json:"price"`  // Order price
+	Symbol string  `json:"symbol"` // Trading pair; btc_usdt, eth_btc......
+	Type   string  `json:"type"`   // Order type (buy or sell),
 }
 
 // SpotNewOrderResponse Order response
@@ -464,17 +445,58 @@ type WebSocketOrderQueryResult struct {
 
 // WebSocketOrderQueryRecords contains order information from a order.query websocket request
 type WebSocketOrderQueryRecords struct {
-	ID           int     `json:"id"`
+	ID           int64   `json:"id"`
 	Market       string  `json:"market"`
-	User         int     `json:"user"`
+	User         int64   `json:"user"`
 	Ctime        float64 `json:"ctime"`
 	Mtime        float64 `json:"mtime"`
-	Price        string  `json:"price"`
-	Amount       string  `json:"amount"`
-	Left         string  `json:"left"`
-	DealFee      string  `json:"dealFee"`
-	OrderType    int     `json:"orderType"`
-	Type         int     `json:"type"`
-	FilledAmount string  `json:"filledAmount"`
-	FilledTotal  string  `json:"filledTotal"`
+	Price        float64 `json:"price,string"`
+	Amount       float64 `json:"amount,string"`
+	Left         float64 `json:"left,string"`
+	DealFee      float64 `json:"dealFee,string"`
+	OrderType    int64   `json:"orderType"`
+	Type         int64   `json:"type"`
+	FilledAmount float64 `json:"filledAmount,string"`
+	FilledTotal  float64 `json:"filledTotal,string"`
+}
+
+// WebsocketAuthenticationResponse contains the result of a login request
+type WebsocketAuthenticationResponse struct {
+	Error  string `json:"error,omitempty"`
+	Result struct {
+		Status string `json:"status"`
+	} `json:"result"`
+	ID int64 `json:"id"`
+}
+
+// wsGetBalanceRequest
+type wsGetBalanceRequest struct {
+	ID     int64    `json:"id"`
+	Method string   `json:"method"`
+	Params []string `json:"params"`
+}
+
+// WsGetBalanceResponse stores WS GetBalance response
+type WsGetBalanceResponse struct {
+	Error  interface{}                         `json:"error"`
+	Result map[string]WsGetBalanceResponseData `json:"result"`
+	ID     int64                               `json:"id"`
+}
+
+// WsGetBalanceResponseData contains currency data
+type WsGetBalanceResponseData struct {
+	Available float64 `json:"available,string"`
+	Freeze    float64 `json:"freeze,string"`
+}
+
+type wsBalanceSubscription struct {
+	Method     string                                `json:"method"`
+	Parameters []map[string]WsGetBalanceResponseData `json:"params"`
+	ID         int64                                 `json:"id"`
+}
+
+type wsOrderUpdate struct {
+	ID     int64         `json:"id"`
+	Method string        `json:"method"`
+	Params []interface{} `json:"params"`
 }

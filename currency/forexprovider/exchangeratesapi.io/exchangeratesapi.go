@@ -1,36 +1,18 @@
 package exchangerates
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
-	"github.com/thrasher-/gocryptotrader/common"
-	"github.com/thrasher-/gocryptotrader/currency/forexprovider/base"
-	"github.com/thrasher-/gocryptotrader/exchanges/request"
-	log "github.com/thrasher-/gocryptotrader/logger"
+	"github.com/thrasher-corp/gocryptotrader/common"
+	"github.com/thrasher-corp/gocryptotrader/currency/forexprovider/base"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/request"
+	"github.com/thrasher-corp/gocryptotrader/log"
 )
-
-const (
-	exchangeRatesAPI                 = "https://api.exchangeratesapi.io"
-	exchangeRatesLatest              = "latest"
-	exchangeRatesHistory             = "history"
-	exchangeRatesSupportedCurrencies = "EUR,CHF,USD,BRL,ISK,PHP,KRW,BGN,MXN," +
-		"RON,CAD,SGD,NZD,THB,HKD,JPY,NOK,HRK,ILS,GBP,DKK,HUF,MYR,RUB,TRY,IDR," +
-		"ZAR,INR,AUD,CZK,SEK,CNY,PLN"
-
-	authRate   = 0
-	unAuthRate = 0
-)
-
-// ExchangeRates stores the struct for the ExchangeRatesAPI API
-type ExchangeRates struct {
-	base.Base
-	Requester *request.Requester
-}
 
 // Setup sets appropriate values for CurrencyLayer
 func (e *ExchangeRates) Setup(config base.Settings) error {
@@ -40,9 +22,8 @@ func (e *ExchangeRates) Setup(config base.Settings) error {
 	e.Verbose = config.Verbose
 	e.PrimaryProvider = config.PrimaryProvider
 	e.Requester = request.New(e.Name,
-		request.NewRateLimit(time.Second*10, authRate),
-		request.NewRateLimit(time.Second*10, unAuthRate),
-		common.NewHTTPClientWithTimeout(base.DefaultTimeOut))
+		common.NewHTTPClientWithTimeout(base.DefaultTimeOut),
+		request.WithLimiter(request.NewBasicRateLimit(rateLimitInterval, requestRate)))
 	return nil
 }
 
@@ -66,8 +47,9 @@ func cleanCurrencies(baseCurrency, symbols string) string {
 		}
 
 		// remove and warn about any unsupported currencies
-		if !common.StringContains(exchangeRatesSupportedCurrencies, x) {
-			log.Warnf("Forex provider ExchangeRatesAPI does not support currency %s, removing from forex rates query.", x)
+		if !strings.Contains(exchangeRatesSupportedCurrencies, x) { // nolint:gocritic
+			log.Warnf(log.Global,
+				"Forex provider ExchangeRatesAPI does not support currency %s, removing from forex rates query.\n", x)
 			continue
 		}
 		cleanedCurrencies = append(cleanedCurrencies, x)
@@ -164,21 +146,17 @@ func (e *ExchangeRates) GetRates(baseCurrency, symbols string) (map[string]float
 
 // GetSupportedCurrencies returns the supported currency list
 func (e *ExchangeRates) GetSupportedCurrencies() ([]string, error) {
-	return common.SplitStrings(exchangeRatesSupportedCurrencies, ","), nil
+	return strings.Split(exchangeRatesSupportedCurrencies, ","), nil
 }
 
 // SendHTTPRequest sends a HTTPS request to the desired endpoint and returns the result
 func (e *ExchangeRates) SendHTTPRequest(endPoint string, values url.Values, result interface{}) error {
 	path := common.EncodeURLValues(exchangeRatesAPI+"/"+endPoint, values)
-	err := e.Requester.SendPayload(http.MethodGet,
-		path,
-		nil,
-		nil,
-		&result,
-		false,
-		false,
-		e.Verbose,
-		false)
+	err := e.Requester.SendPayload(context.Background(), &request.Item{
+		Method:  http.MethodGet,
+		Path:    path,
+		Result:  &result,
+		Verbose: e.Verbose})
 	if err != nil {
 		return fmt.Errorf("exchangeRatesAPI SendHTTPRequest error %s with path %s",
 			err,

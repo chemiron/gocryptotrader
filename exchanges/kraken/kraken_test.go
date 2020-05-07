@@ -1,18 +1,25 @@
 package kraken
 
 import (
-	"fmt"
+	"log"
+	"net/http"
+	"os"
 	"strings"
 	"testing"
 
-	"github.com/thrasher-/gocryptotrader/common"
-	"github.com/thrasher-/gocryptotrader/config"
-	"github.com/thrasher-/gocryptotrader/currency"
-	exchange "github.com/thrasher-/gocryptotrader/exchanges"
-	"github.com/thrasher-/gocryptotrader/exchanges/sharedtestvalues"
+	"github.com/gorilla/websocket"
+	"github.com/thrasher-corp/gocryptotrader/config"
+	"github.com/thrasher-corp/gocryptotrader/core"
+	"github.com/thrasher-corp/gocryptotrader/currency"
+	exchange "github.com/thrasher-corp/gocryptotrader/exchanges"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/order"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/sharedtestvalues"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/websocket/wshandler"
+	"github.com/thrasher-corp/gocryptotrader/portfolio/withdraw"
 )
 
 var k Kraken
+var wsSetupRan bool
 
 // Please add your own APIkeys to do correct due diligence testing.
 const (
@@ -22,26 +29,30 @@ const (
 	canManipulateRealOrders = false
 )
 
-// TestSetDefaults setup func
-func TestSetDefaults(t *testing.T) {
-	k.SetDefaults()
-}
-
 // TestSetup setup func
-func TestSetup(t *testing.T) {
+func TestMain(m *testing.M) {
+	k.SetDefaults()
 	cfg := config.GetConfig()
-	cfg.LoadConfig("../../testdata/configtest.json")
+	err := cfg.LoadConfig("../../testdata/configtest.json", true)
+	if err != nil {
+		log.Fatal("Kraken load config error", err)
+	}
 	krakenConfig, err := cfg.GetExchangeConfig("Kraken")
 	if err != nil {
-		t.Error("Test Failed - kraken Setup() init error", err)
+		log.Fatal("kraken Setup() init error", err)
 	}
-	krakenConfig.AuthenticatedAPISupport = true
-	krakenConfig.APIKey = apiKey
-	krakenConfig.APISecret = apiSecret
-	krakenConfig.ClientID = clientID
-	krakenConfig.WebsocketURL = k.WebsocketURL
-	subscribeToDefaultChannels = false
-	k.Setup(&krakenConfig)
+	krakenConfig.API.AuthenticatedSupport = true
+	krakenConfig.API.Credentials.Key = apiKey
+	krakenConfig.API.Credentials.Secret = apiSecret
+	krakenConfig.API.Credentials.ClientID = clientID
+	krakenConfig.API.Endpoints.WebsocketURL = k.API.Endpoints.WebsocketURL
+	err = k.Setup(krakenConfig)
+	if err != nil {
+		log.Fatal("Kraken setup error", err)
+	}
+	k.Websocket.DataHandler = sharedtestvalues.GetWebsocketInterfaceChannelOverride()
+	k.Websocket.TrafficAlert = sharedtestvalues.GetWebsocketStructChannelOverride()
+	os.Exit(m.Run())
 }
 
 // TestGetServerTime API endpoint test
@@ -49,7 +60,7 @@ func TestGetServerTime(t *testing.T) {
 	t.Parallel()
 	_, err := k.GetServerTime()
 	if err != nil {
-		t.Error("Test Failed - GetServerTime() error", err)
+		t.Error("GetServerTime() error", err)
 	}
 }
 
@@ -58,7 +69,7 @@ func TestGetAssets(t *testing.T) {
 	t.Parallel()
 	_, err := k.GetAssets()
 	if err != nil {
-		t.Error("Test Failed - GetAssets() error", err)
+		t.Error("GetAssets() error", err)
 	}
 }
 
@@ -67,7 +78,7 @@ func TestGetAssetPairs(t *testing.T) {
 	t.Parallel()
 	_, err := k.GetAssetPairs()
 	if err != nil {
-		t.Error("Test Failed - GetAssetPairs() error", err)
+		t.Error("GetAssetPairs() error", err)
 	}
 }
 
@@ -76,7 +87,7 @@ func TestGetTicker(t *testing.T) {
 	t.Parallel()
 	_, err := k.GetTicker("BCHEUR")
 	if err != nil {
-		t.Error("Test Failed - GetTicker() error", err)
+		t.Error("GetTicker() error", err)
 	}
 }
 
@@ -85,7 +96,7 @@ func TestGetTickers(t *testing.T) {
 	t.Parallel()
 	_, err := k.GetTickers("LTCUSD,ETCUSD")
 	if err != nil {
-		t.Error("Test failed - GetTickers() error", err)
+		t.Error("GetTickers() error", err)
 	}
 }
 
@@ -94,7 +105,7 @@ func TestGetOHLC(t *testing.T) {
 	t.Parallel()
 	_, err := k.GetOHLC("BCHEUR")
 	if err != nil {
-		t.Error("Test Failed - GetOHLC() error", err)
+		t.Error("GetOHLC() error", err)
 	}
 }
 
@@ -103,7 +114,7 @@ func TestGetDepth(t *testing.T) {
 	t.Parallel()
 	_, err := k.GetDepth("BCHEUR")
 	if err != nil {
-		t.Error("Test Failed - GetDepth() error", err)
+		t.Error("GetDepth() error", err)
 	}
 }
 
@@ -112,7 +123,7 @@ func TestGetTrades(t *testing.T) {
 	t.Parallel()
 	_, err := k.GetTrades("BCHEUR")
 	if err != nil {
-		t.Error("Test Failed - GetTrades() error", err)
+		t.Error("GetTrades() error", err)
 	}
 }
 
@@ -121,7 +132,7 @@ func TestGetSpread(t *testing.T) {
 	t.Parallel()
 	_, err := k.GetSpread("BCHEUR")
 	if err != nil {
-		t.Error("Test Failed - GetSpread() error", err)
+		t.Error("GetSpread() error", err)
 	}
 }
 
@@ -130,7 +141,7 @@ func TestGetBalance(t *testing.T) {
 	t.Parallel()
 	_, err := k.GetBalance()
 	if err == nil {
-		t.Error("Test Failed - GetBalance() error", err)
+		t.Error("GetBalance() Expected error")
 	}
 }
 
@@ -140,7 +151,7 @@ func TestGetTradeBalance(t *testing.T) {
 	args := TradeBalanceOptions{Asset: "ZEUR"}
 	_, err := k.GetTradeBalance(args)
 	if err == nil {
-		t.Error("Test Failed - GetTradeBalance() error", err)
+		t.Error("GetTradeBalance() Expected error")
 	}
 }
 
@@ -150,7 +161,7 @@ func TestGetOpenOrders(t *testing.T) {
 	args := OrderInfoOptions{Trades: true}
 	_, err := k.GetOpenOrders(args)
 	if err == nil {
-		t.Error("Test Failed - GetOpenOrders() error", err)
+		t.Error("GetOpenOrders() Expected error")
 	}
 }
 
@@ -160,7 +171,7 @@ func TestGetClosedOrders(t *testing.T) {
 	args := GetClosedOrdersOptions{Trades: true, Start: "OE4KV4-4FVQ5-V7XGPU"}
 	_, err := k.GetClosedOrders(args)
 	if err == nil {
-		t.Error("Test Failed - GetClosedOrders() error", err)
+		t.Error("GetClosedOrders() Expected error")
 	}
 }
 
@@ -170,7 +181,7 @@ func TestQueryOrdersInfo(t *testing.T) {
 	args := OrderInfoOptions{Trades: true}
 	_, err := k.QueryOrdersInfo(args, "OR6ZFV-AA6TT-CKFFIW", "OAMUAJ-HLVKG-D3QJ5F")
 	if err == nil {
-		t.Error("Test Failed - QueryOrdersInfo() error", err)
+		t.Error("QueryOrdersInfo() Expected error")
 	}
 }
 
@@ -180,7 +191,7 @@ func TestGetTradesHistory(t *testing.T) {
 	args := GetTradesHistoryOptions{Trades: true, Start: "TMZEDR-VBJN2-NGY6DX", End: "TVRXG2-R62VE-RWP3UW"}
 	_, err := k.GetTradesHistory(args)
 	if err == nil {
-		t.Error("Test Failed - GetTradesHistory() error", err)
+		t.Error("GetTradesHistory() Expected error")
 	}
 }
 
@@ -189,7 +200,7 @@ func TestQueryTrades(t *testing.T) {
 	t.Parallel()
 	_, err := k.QueryTrades(true, "TMZEDR-VBJN2-NGY6DX", "TFLWIB-KTT7L-4TWR3L", "TDVRAH-2H6OS-SLSXRX")
 	if err == nil {
-		t.Error("Test Failed - QueryTrades() error", err)
+		t.Error("QueryTrades() Expected error")
 	}
 }
 
@@ -198,7 +209,7 @@ func TestOpenPositions(t *testing.T) {
 	t.Parallel()
 	_, err := k.OpenPositions(false)
 	if err == nil {
-		t.Error("Test Failed - OpenPositions() error", err)
+		t.Error("OpenPositions() Expected error")
 	}
 }
 
@@ -208,7 +219,7 @@ func TestGetLedgers(t *testing.T) {
 	args := GetLedgersOptions{Start: "LRUHXI-IWECY-K4JYGO", End: "L5NIY7-JZQJD-3J4M2V", Ofs: 15}
 	_, err := k.GetLedgers(args)
 	if err == nil {
-		t.Error("Test Failed - GetLedgers() error", err)
+		t.Error("GetLedgers() Expected error")
 	}
 }
 
@@ -217,7 +228,7 @@ func TestQueryLedgers(t *testing.T) {
 	t.Parallel()
 	_, err := k.QueryLedgers("LVTSFS-NHZVM-EXNZ5M")
 	if err == nil {
-		t.Error("Test Failed - QueryLedgers() error", err)
+		t.Error("QueryLedgers() Expected error")
 	}
 }
 
@@ -226,17 +237,19 @@ func TestGetTradeVolume(t *testing.T) {
 	t.Parallel()
 	_, err := k.GetTradeVolume(true, "OAVY7T-MV5VK-KHDF5X")
 	if err == nil {
-		t.Error("Test Failed - GetTradeVolume() error", err)
+		t.Error("GetTradeVolume() Expected error")
 	}
 }
 
 // TestAddOrder API endpoint test
 func TestAddOrder(t *testing.T) {
 	t.Parallel()
-	args := AddOrderOptions{Oflags: "fcib"}
-	_, err := k.AddOrder("XXBTZUSD", "sell", "market", 0.00000001, 0, 0, 0, &args)
+	args := AddOrderOptions{OrderFlags: "fcib"}
+	_, err := k.AddOrder("XXBTZUSD",
+		order.Sell.Lower(), order.Limit.Lower(),
+		0.00000001, 0, 0, 0, &args)
 	if err == nil {
-		t.Error("Test Failed - AddOrder() error", err)
+		t.Error("AddOrder() Expected error")
 	}
 }
 
@@ -245,7 +258,7 @@ func TestCancelExistingOrder(t *testing.T) {
 	t.Parallel()
 	_, err := k.CancelExistingOrder("OAVY7T-MV5VK-KHDF5X")
 	if err == nil {
-		t.Error("Test Failed - CancelExistingOrder() error", err)
+		t.Error("CancelExistingOrder() Expected error")
 	}
 }
 
@@ -266,7 +279,7 @@ func setFeeBuilder() *exchange.FeeBuilder {
 func TestGetFeeByTypeOfflineTradeFee(t *testing.T) {
 	var feeBuilder = setFeeBuilder()
 	k.GetFeeByType(feeBuilder)
-	if apiKey == "" || apiSecret == "" {
+	if !areTestAPIKeysSet() {
 		if feeBuilder.FeeType != exchange.OfflineTradeFee {
 			t.Errorf("Expected %v, received %v", exchange.OfflineTradeFee, feeBuilder.FeeType)
 		}
@@ -278,15 +291,13 @@ func TestGetFeeByTypeOfflineTradeFee(t *testing.T) {
 }
 
 func TestGetFee(t *testing.T) {
-	k.SetDefaults()
-	TestSetup(t)
 	var feeBuilder = setFeeBuilder()
 
 	if areTestAPIKeysSet() {
 		// CryptocurrencyTradeFee Basic
 		if resp, err := k.GetFee(feeBuilder); resp != float64(0.0026) || err != nil {
 			t.Error(err)
-			t.Errorf("Test Failed - GetFee() error. Expected: %f, Received: %f", float64(0.0026), resp)
+			t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(0.0026), resp)
 		}
 
 		// CryptocurrencyTradeFee High quantity
@@ -294,7 +305,7 @@ func TestGetFee(t *testing.T) {
 		feeBuilder.Amount = 1000
 		feeBuilder.PurchasePrice = 1000
 		if resp, err := k.GetFee(feeBuilder); resp != float64(2600) || err != nil {
-			t.Errorf("Test Failed - GetFee() error. Expected: %f, Received: %f", float64(2600), resp)
+			t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(2600), resp)
 			t.Error(err)
 		}
 
@@ -302,7 +313,7 @@ func TestGetFee(t *testing.T) {
 		feeBuilder = setFeeBuilder()
 		feeBuilder.IsMaker = true
 		if resp, err := k.GetFee(feeBuilder); resp != float64(0.0016) || err != nil {
-			t.Errorf("Test Failed - GetFee() error. Expected: %f, Received: %f", float64(0.0016), resp)
+			t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(0.0016), resp)
 			t.Error(err)
 		}
 
@@ -310,7 +321,7 @@ func TestGetFee(t *testing.T) {
 		feeBuilder = setFeeBuilder()
 		feeBuilder.PurchasePrice = -1000
 		if resp, err := k.GetFee(feeBuilder); resp != float64(0) || err != nil {
-			t.Errorf("Test Failed - GetFee() error. Expected: %f, Received: %f", float64(0), resp)
+			t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(0), resp)
 			t.Error(err)
 		}
 
@@ -318,7 +329,7 @@ func TestGetFee(t *testing.T) {
 		feeBuilder = setFeeBuilder()
 		feeBuilder.FeeType = exchange.InternationalBankDepositFee
 		if resp, err := k.GetFee(feeBuilder); resp != float64(5) || err != nil {
-			t.Errorf("Test Failed - GetFee() error. Expected: %f, Received: %f", float64(5), resp)
+			t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(5), resp)
 			t.Error(err)
 		}
 	}
@@ -328,7 +339,7 @@ func TestGetFee(t *testing.T) {
 	feeBuilder.FeeType = exchange.CyptocurrencyDepositFee
 	feeBuilder.Pair.Base = currency.XXBT
 	if resp, err := k.GetFee(feeBuilder); resp != float64(0) || err != nil {
-		t.Errorf("Test Failed - GetFee() error. Expected: %f, Received: %f", float64(5), resp)
+		t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(5), resp)
 		t.Error(err)
 	}
 
@@ -336,7 +347,7 @@ func TestGetFee(t *testing.T) {
 	feeBuilder = setFeeBuilder()
 	feeBuilder.FeeType = exchange.CryptocurrencyWithdrawalFee
 	if resp, err := k.GetFee(feeBuilder); resp != float64(0.0005) || err != nil {
-		t.Errorf("Test Failed - GetFee() error. Expected: %f, Received: %f", float64(0.0005), resp)
+		t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(0.0005), resp)
 		t.Error(err)
 	}
 
@@ -345,7 +356,7 @@ func TestGetFee(t *testing.T) {
 	feeBuilder.Pair.Base = currency.NewCode("hello")
 	feeBuilder.FeeType = exchange.CryptocurrencyWithdrawalFee
 	if resp, err := k.GetFee(feeBuilder); resp != float64(0) || err != nil {
-		t.Errorf("Test Failed - GetFee() error. Expected: %f, Received: %f", float64(0), resp)
+		t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(0), resp)
 		t.Error(err)
 	}
 
@@ -354,18 +365,15 @@ func TestGetFee(t *testing.T) {
 	feeBuilder.FeeType = exchange.InternationalBankWithdrawalFee
 	feeBuilder.FiatCurrency = currency.USD
 	if resp, err := k.GetFee(feeBuilder); resp != float64(5) || err != nil {
-		t.Errorf("Test Failed - GetFee() error. Expected: %f, Received: %f", float64(5), resp)
+		t.Errorf("GetFee() error. Expected: %f, Received: %f", float64(5), resp)
 		t.Error(err)
 	}
 }
 
 // TestFormatWithdrawPermissions logic test
 func TestFormatWithdrawPermissions(t *testing.T) {
-	k.SetDefaults()
 	expectedResult := exchange.AutoWithdrawCryptoWithSetupText + " & " + exchange.WithdrawCryptoWith2FAText + " & " + exchange.AutoWithdrawFiatWithSetupText + " & " + exchange.WithdrawFiatWith2FAText
-
 	withdrawPermissions := k.FormatWithdrawPermissions()
-
 	if withdrawPermissions != expectedResult {
 		t.Errorf("Expected: %s, Received: %s", expectedResult, withdrawPermissions)
 	}
@@ -373,11 +381,8 @@ func TestFormatWithdrawPermissions(t *testing.T) {
 
 // TestGetActiveOrders wrapper test
 func TestGetActiveOrders(t *testing.T) {
-	k.SetDefaults()
-	TestSetup(t)
-
-	var getOrdersRequest = exchange.GetOrdersRequest{
-		OrderType: exchange.AnyOrderType,
+	var getOrdersRequest = order.GetOrdersRequest{
+		Type: order.AnyType,
 	}
 
 	_, err := k.GetActiveOrders(&getOrdersRequest)
@@ -390,11 +395,8 @@ func TestGetActiveOrders(t *testing.T) {
 
 // TestGetOrderHistory wrapper test
 func TestGetOrderHistory(t *testing.T) {
-	k.SetDefaults()
-	TestSetup(t)
-
-	var getOrdersRequest = exchange.GetOrdersRequest{
-		OrderType: exchange.AnyOrderType,
+	var getOrdersRequest = order.GetOrdersRequest{
+		Type: order.AnyType,
 	}
 
 	_, err := k.GetOrderHistory(&getOrdersRequest)
@@ -405,31 +407,45 @@ func TestGetOrderHistory(t *testing.T) {
 	}
 }
 
-// Any tests below this line have the ability to impact your orders on the exchange. Enable canManipulateRealOrders to run them
-// ----------------------------------------------------------------------------------------------------------------------------
-func areTestAPIKeysSet() bool {
-	if k.APIKey != "" && k.APIKey != "Key" &&
-		k.APISecret != "" && k.APISecret != "Secret" {
-		return true
-	}
-	return false
-}
-
-// TestSubmitOrder wrapper test
-func TestSubmitOrder(t *testing.T) {
-	k.SetDefaults()
-	TestSetup(t)
-
+// TestGetOrderHistory wrapper test
+func TestGetOrderInfo(t *testing.T) {
 	if areTestAPIKeysSet() && !canManipulateRealOrders {
 		t.Skip("API keys set, canManipulateRealOrders false, skipping test")
 	}
 
-	var p = currency.Pair{
-		Delimiter: "",
-		Base:      currency.XBT,
-		Quote:     currency.CAD,
+	_, err := k.GetOrderInfo("ImACoolOrderID")
+	if !areTestAPIKeysSet() && err == nil {
+		t.Error("Expecting error")
 	}
-	response, err := k.SubmitOrder(p, exchange.BuyOrderSide, exchange.MarketOrderType, 1, 10, "hi")
+	if areTestAPIKeysSet() && !strings.Contains(err.Error(), "- Order ID not found:") {
+		t.Error("Expected Order ID not found error")
+	}
+}
+
+// Any tests below this line have the ability to impact your orders on the exchange. Enable canManipulateRealOrders to run them
+// ----------------------------------------------------------------------------------------------------------------------------
+func areTestAPIKeysSet() bool {
+	return k.ValidateAPICredentials()
+}
+
+// TestSubmitOrder wrapper test
+func TestSubmitOrder(t *testing.T) {
+	if areTestAPIKeysSet() && !canManipulateRealOrders {
+		t.Skip("API keys set, canManipulateRealOrders false, skipping test")
+	}
+
+	var orderSubmission = &order.Submit{
+		Pair: currency.Pair{
+			Base:  currency.XBT,
+			Quote: currency.USD,
+		},
+		Side:     order.Buy,
+		Type:     order.Limit,
+		Price:    1,
+		Amount:   1,
+		ClientID: "meowOrder",
+	}
+	response, err := k.SubmitOrder(orderSubmission)
 	if areTestAPIKeysSet() && (err != nil || !response.IsOrderPlaced) {
 		t.Errorf("Order failed to be placed: %v", err)
 	} else if !areTestAPIKeysSet() && err == nil {
@@ -439,20 +455,16 @@ func TestSubmitOrder(t *testing.T) {
 
 // TestCancelExchangeOrder wrapper test
 func TestCancelExchangeOrder(t *testing.T) {
-	k.SetDefaults()
-	TestSetup(t)
-
 	if areTestAPIKeysSet() && !canManipulateRealOrders {
 		t.Skip("API keys set, canManipulateRealOrders false, skipping test")
 	}
 
 	currencyPair := currency.NewPair(currency.LTC, currency.BTC)
-
-	var orderCancellation = &exchange.OrderCancellation{
-		OrderID:       "1",
-		WalletAddress: "1F5zVDgNjorJ51oGebSvNCrSAHpwGkUdDB",
+	var orderCancellation = &order.Cancel{
+		ID:            "1",
+		WalletAddress: core.BitcoinDonationAddress,
 		AccountID:     "1",
-		CurrencyPair:  currencyPair,
+		Pair:          currencyPair,
 	}
 
 	err := k.CancelOrder(orderCancellation)
@@ -466,20 +478,16 @@ func TestCancelExchangeOrder(t *testing.T) {
 
 // TestCancelAllExchangeOrders wrapper test
 func TestCancelAllExchangeOrders(t *testing.T) {
-	k.SetDefaults()
-	TestSetup(t)
-
 	if areTestAPIKeysSet() && !canManipulateRealOrders {
 		t.Skip("API keys set, canManipulateRealOrders false, skipping test")
 	}
 
 	currencyPair := currency.NewPair(currency.LTC, currency.BTC)
-
-	var orderCancellation = &exchange.OrderCancellation{
-		OrderID:       "1",
-		WalletAddress: "1F5zVDgNjorJ51oGebSvNCrSAHpwGkUdDB",
+	var orderCancellation = &order.Cancel{
+		ID:            "1",
+		WalletAddress: core.BitcoinDonationAddress,
 		AccountID:     "1",
-		CurrencyPair:  currencyPair,
+		Pair:          currencyPair,
 	}
 
 	resp, err := k.CancelAllOrders(orderCancellation)
@@ -491,43 +499,46 @@ func TestCancelAllExchangeOrders(t *testing.T) {
 		t.Errorf("Could not cancel orders: %v", err)
 	}
 
-	if len(resp.OrderStatus) > 0 {
-		t.Errorf("%v orders failed to cancel", len(resp.OrderStatus))
+	if len(resp.Status) > 0 {
+		t.Errorf("%v orders failed to cancel", len(resp.Status))
 	}
 }
 
 // TestGetAccountInfo wrapper test
 func TestGetAccountInfo(t *testing.T) {
-	if apiKey != "" || apiSecret != "" || clientID != "" {
-		_, err := k.GetAccountInfo()
+	if areTestAPIKeysSet() || clientID != "" {
+		_, err := k.UpdateAccountInfo()
 		if err != nil {
-			t.Error("Test Failed - GetAccountInfo() error", err)
+			t.Error("GetAccountInfo() error", err)
 		}
 	} else {
-		_, err := k.GetAccountInfo()
+		_, err := k.UpdateAccountInfo()
 		if err == nil {
-			t.Error("Test Failed - GetAccountInfo() error")
+			t.Error("GetAccountInfo() Expected error")
 		}
 	}
 }
 
 // TestModifyOrder wrapper test
 func TestModifyOrder(t *testing.T) {
-	_, err := k.ModifyOrder(&exchange.ModifyOrder{})
+	if areTestAPIKeysSet() && !canManipulateRealOrders {
+		t.Skip("API keys set, canManipulateRealOrders false, skipping test")
+	}
+	_, err := k.ModifyOrder(&order.Modify{})
 	if err == nil {
-		t.Error("Test failed - ModifyOrder() error")
+		t.Error("ModifyOrder() Expected error")
 	}
 }
 
 // TestWithdraw wrapper test
 func TestWithdraw(t *testing.T) {
-	k.SetDefaults()
-	TestSetup(t)
-	var withdrawCryptoRequest = exchange.WithdrawRequest{
-		Amount:        100,
+	withdrawCryptoRequest := withdraw.Request{
+		Crypto: &withdraw.CryptoRequest{
+			Address: core.BitcoinDonationAddress,
+		},
+		Amount:        -1,
 		Currency:      currency.XXBT,
-		Address:       "1F5zVDgNjorJ51oGebSvNCrSAHpwGkUdDB",
-		Description:   "donation",
+		Description:   "WITHDRAW IT ALL",
 		TradePassword: "Key",
 	}
 
@@ -546,18 +557,14 @@ func TestWithdraw(t *testing.T) {
 
 // TestWithdrawFiat wrapper test
 func TestWithdrawFiat(t *testing.T) {
-	k.SetDefaults()
-	TestSetup(t)
-
 	if areTestAPIKeysSet() && !canManipulateRealOrders {
 		t.Skip("API keys set, canManipulateRealOrders false, skipping test")
 	}
 
-	var withdrawFiatRequest = exchange.WithdrawRequest{
-		Amount:        100,
+	var withdrawFiatRequest = withdraw.Request{
+		Amount:        -1,
 		Currency:      currency.EUR,
-		Address:       "",
-		Description:   "donation",
+		Description:   "WITHDRAW IT ALL",
 		TradePassword: "someBank",
 	}
 
@@ -572,18 +579,14 @@ func TestWithdrawFiat(t *testing.T) {
 
 // TestWithdrawInternationalBank wrapper test
 func TestWithdrawInternationalBank(t *testing.T) {
-	k.SetDefaults()
-	TestSetup(t)
-
 	if areTestAPIKeysSet() && !canManipulateRealOrders {
 		t.Skip("API keys set, canManipulateRealOrders false, skipping test")
 	}
 
-	var withdrawFiatRequest = exchange.WithdrawRequest{
-		Amount:        100,
+	var withdrawFiatRequest = withdraw.Request{
+		Amount:        -1,
 		Currency:      currency.EUR,
-		Address:       "",
-		Description:   "donation",
+		Description:   "WITHDRAW IT ALL",
 		TradePassword: "someBank",
 	}
 
@@ -601,145 +604,754 @@ func TestGetDepositAddress(t *testing.T) {
 	if areTestAPIKeysSet() {
 		_, err := k.GetDepositAddress(currency.BTC, "")
 		if err != nil {
-			t.Error("Test Failed - GetDepositAddress() error", err)
+			t.Error("GetDepositAddress() error", err)
 		}
 	} else {
 		_, err := k.GetDepositAddress(currency.BTC, "")
 		if err == nil {
-			t.Error("Test Failed - GetDepositAddress() error can not be nil")
+			t.Error("GetDepositAddress() error can not be nil")
 		}
 	}
 }
 
 // TestWithdrawStatus wrapper test
 func TestWithdrawStatus(t *testing.T) {
-	k.SetDefaults()
-	TestSetup(t)
-
 	if areTestAPIKeysSet() {
 		_, err := k.WithdrawStatus(currency.BTC, "")
 		if err != nil {
-			t.Error("Test Failed - WithdrawStatus() error", err)
+			t.Error("WithdrawStatus() error", err)
 		}
 	} else {
 		_, err := k.WithdrawStatus(currency.BTC, "")
 		if err == nil {
-			t.Error("Test Failed - GetDepositAddress() error can not be nil", err)
+			t.Error("GetDepositAddress() error can not be nil")
 		}
 	}
 }
 
 // TestWithdrawCancel wrapper test
 func TestWithdrawCancel(t *testing.T) {
-	k.SetDefaults()
-	TestSetup(t)
 	_, err := k.WithdrawCancel(currency.BTC, "")
 	if areTestAPIKeysSet() && err == nil {
-		t.Error("Test Failed - WithdrawCancel() error cannot be nil")
+		t.Error("WithdrawCancel() error cannot be nil")
 	} else if !areTestAPIKeysSet() && err == nil {
-		t.Errorf("Test Failed - WithdrawCancel() error - expecting an error when no keys are set but received nil")
+		t.Errorf("WithdrawCancel() error - expecting an error when no keys are set but received nil")
 	}
 }
 
 // ---------------------------- Websocket tests -----------------------------------------
 
-// TestOrderbookBufferReset websocket test
-func TestOrderbookBufferReset(t *testing.T) {
-	if k.Name == "" {
-		k.SetDefaults()
-		TestSetup(t)
+func setupWsTests(t *testing.T) {
+	if wsSetupRan {
+		return
 	}
-	if !k.Websocket.IsEnabled() {
-		t.Skip("Websocket not enabled, skipping")
-	}
-	var obUpdates []string
-	obpartial := `[0,{"as":[["5541.30000","2.50700000","0"]],"bs":[["5541.20000","1.52900000","0"]]}]`
-	for i := 1; i < orderbookBufferLimit+2; i++ {
-		obUpdates = append(obUpdates, fmt.Sprintf(`[0,{"a":[["5541.30000","2.50700000","%v"]],"b":[["5541.30000","1.00000000","%v"]]}]`, i, i))
+	if !k.Websocket.IsEnabled() && !k.API.AuthenticatedWebsocketSupport || !areTestAPIKeysSet() {
+		t.Skip(wshandler.WebsocketNotEnabled)
 	}
 	k.Websocket.DataHandler = sharedtestvalues.GetWebsocketInterfaceChannelOverride()
-	var dataResponse WebsocketDataResponse
-	err := common.JSONDecode([]byte(obpartial), &dataResponse)
+	comms = make(chan wshandler.WebsocketResponse, sharedtestvalues.WebsocketChannelOverrideCapacity)
+	k.Websocket.TrafficAlert = sharedtestvalues.GetWebsocketStructChannelOverride()
+	k.WebsocketConn = &wshandler.WebsocketConnection{
+		ExchangeName:         k.Name,
+		URL:                  krakenWSURL,
+		Verbose:              k.Verbose,
+		ResponseMaxLimit:     exchange.DefaultWebsocketResponseMaxLimit,
+		ResponseCheckTimeout: exchange.DefaultWebsocketResponseCheckTimeout,
+	}
+	k.AuthenticatedWebsocketConn = &wshandler.WebsocketConnection{
+		ExchangeName:         k.Name,
+		URL:                  krakenAuthWSURL,
+		Verbose:              k.Verbose,
+		ResponseMaxLimit:     exchange.DefaultWebsocketResponseMaxLimit,
+		ResponseCheckTimeout: exchange.DefaultWebsocketResponseCheckTimeout,
+	}
+	var dialer websocket.Dialer
+	err := k.WebsocketConn.Dial(&dialer, http.Header{})
 	if err != nil {
-		t.Errorf("Could not parse, %v", err)
+		t.Fatal(err)
 	}
-	obData := dataResponse[1].(map[string]interface{})
-	channelData := WebsocketChannelData{
-		ChannelID:    0,
-		Subscription: "orderbook",
-		Pair:         currency.NewPairWithDelimiter("XBT", "USD", "/"),
+	err = k.AuthenticatedWebsocketConn.Dial(&dialer, http.Header{})
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	k.wsProcessOrderBookPartial(
-		&channelData,
-		obData,
-	)
+	token, err := k.GetWebsocketToken()
+	if err != nil {
+		t.Error(err)
+	}
+	authToken = token
 
-	for i := 0; i < len(obUpdates); i++ {
-		err = common.JSONDecode([]byte(obUpdates[i]), &dataResponse)
-		if err != nil {
-			t.Errorf("Could not parse, %v", err)
-		}
-		obData = dataResponse[1].(map[string]interface{})
-		if i < len(obUpdates)-1 {
-			k.wsProcessOrderBookBuffer(&channelData, obData)
-		} else if i == len(obUpdates)-1 {
-			k.wsProcessOrderBookUpdate(&channelData)
-			k.wsProcessOrderBookBuffer(&channelData, obData)
-			if len(orderbookBuffer[channelData.ChannelID]) != 1 {
-				t.Error("Buffer should have 1 entry after being reset")
-			}
-		}
+	go k.wsFunnelConnectionData(k.WebsocketConn)
+	go k.wsFunnelConnectionData(k.AuthenticatedWebsocketConn)
+	go k.wsReadData()
+	go k.wsPingHandler()
+	wsSetupRan = true
+}
+
+// TestWebsocketSubscribe tests returning a message with an id
+func TestWebsocketSubscribe(t *testing.T) {
+	setupWsTests(t)
+	err := k.Subscribe(wshandler.WebsocketChannelSubscription{
+		Channel:  defaultSubscribedChannels[0],
+		Currency: currency.NewPairWithDelimiter("XBT", "USD", "/"),
+	})
+	if err != nil {
+		t.Error(err)
 	}
 }
 
-// TestOrderbookBufferReset websocket test
-func TestOrderBookOutOfOrder(t *testing.T) {
-	if k.Name == "" {
-		k.SetDefaults()
-		TestSetup(t)
+func TestGetWSToken(t *testing.T) {
+	t.Parallel()
+	if !areTestAPIKeysSet() {
+		t.Skip("API keys required, skipping")
 	}
-	if !k.Websocket.IsEnabled() {
-		t.Skip("Websocket not enabled, skipping")
-	}
-	obpartial := `[0,{"as":[["5541.30000","2.50700000","0"]],"bs":[["5541.20000","1.52900000","5"]]}]`
-	obupdate1 := `[0,{"a":[["5541.30000","0.00000000","1"]],"b":[["5541.30000","0.00000000","3"]]}]`
-	obupdate2 := `[0,{"a":[["5541.30000","2.50700000","2"]],"b":[["5541.30000","0.00000000","1"]]}]`
-
-	k.Websocket.DataHandler = sharedtestvalues.GetWebsocketInterfaceChannelOverride()
-	var dataResponse WebsocketDataResponse
-	err := common.JSONDecode([]byte(obpartial), &dataResponse)
+	resp, err := k.GetWebsocketToken()
 	if err != nil {
-		t.Errorf("Could not parse, %v", err)
+		t.Error(err)
 	}
-	obData := dataResponse[1].(map[string]interface{})
-	channelData := WebsocketChannelData{
-		ChannelID:    0,
-		Subscription: "orderbook",
-		Pair:         currency.NewPairWithDelimiter("XBT", "USD", "/"),
+	if resp == "" {
+		t.Error("Token not returned")
 	}
+}
 
-	k.wsProcessOrderBookPartial(
-		&channelData,
-		obData,
-	)
-
-	err = common.JSONDecode([]byte(obupdate1), &dataResponse)
+func TestWsAddOrder(t *testing.T) {
+	setupWsTests(t)
+	_, err := k.wsAddOrder(&WsAddOrderRequest{
+		OrderType: order.Limit.Lower(),
+		OrderSide: order.Buy.Lower(),
+		Pair:      "XBT/USD",
+		Price:     -100,
+	})
 	if err != nil {
-		t.Errorf("Could not parse, %v", err)
+		t.Error(err)
 	}
-	obData = dataResponse[1].(map[string]interface{})
-	k.wsProcessOrderBookBuffer(&channelData, obData)
+}
 
-	err = common.JSONDecode([]byte(obupdate2), &dataResponse)
+func TestWsCancelOrder(t *testing.T) {
+	setupWsTests(t)
+	err := k.wsCancelOrders([]string{"1337"})
 	if err != nil {
-		t.Errorf("Could not parse, %v", err)
+		t.Error(err)
 	}
-	obData = dataResponse[1].(map[string]interface{})
-	k.wsProcessOrderBookBuffer(&channelData, obData)
+}
 
-	err = k.wsProcessOrderBookUpdate(&channelData)
-	if !strings.Contains(err.Error(), "orderbook update out of order") {
-		t.Error("Expected out of order orderbook error")
+func TestWsPong(t *testing.T) {
+	pressXToJSON := []byte(`{
+  "event": "pong",
+  "reqid": 42
+}`)
+	err := k.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestWsSystemStatus(t *testing.T) {
+	pressXToJSON := []byte(`{
+  "connectionID": 8628615390848610000,
+  "event": "systemStatus",
+  "status": "online",
+  "version": "1.0.0"
+}`)
+	err := k.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestWsSubscriptionStatus(t *testing.T) {
+	pressXToJSON := []byte(`{
+  "channelID": 10001,
+  "channelName": "ticker",
+  "event": "subscriptionStatus",
+  "pair": "XBT/EUR",
+  "status": "subscribed",
+  "subscription": {
+    "name": "ticker"
+  }
+}`)
+	err := k.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+
+	pressXToJSON = []byte(`{
+  "channelID": 10001,
+  "channelName": "ohlc-5",
+  "event": "subscriptionStatus",
+  "pair": "XBT/EUR",
+  "reqid": 42,
+  "status": "unsubscribed",
+  "subscription": {
+    "interval": 5,
+    "name": "ohlc"
+  }
+}`)
+	err = k.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+
+	pressXToJSON = []byte(`{
+  "channelName": "ownTrades",
+  "event": "subscriptionStatus",
+  "status": "subscribed",
+  "subscription": {
+    "name": "ownTrades"
+  }
+}`)
+	err = k.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+	pressXToJSON = []byte(`{
+  "errorMessage": "Subscription depth not supported",
+  "event": "subscriptionStatus",
+  "pair": "XBT/USD",
+  "status": "error",
+  "subscription": {
+    "depth": 42,
+    "name": "book"
+  }
+}`)
+	err = k.wsHandleData(pressXToJSON)
+	if err == nil {
+		t.Error("Expected error")
+	}
+}
+
+func TestWsTicker(t *testing.T) {
+	pressXToJSON := []byte(`{
+  "channelID": 1337,
+  "channelName": "ticker",
+  "event": "subscriptionStatus",
+  "pair": "XBT/EUR",
+  "status": "subscribed",
+  "subscription": {
+    "name": "ticker"
+  }
+}`)
+	err := k.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+	pressXToJSON = []byte(`[
+  1337,
+  {
+    "a": [
+      "5525.40000",
+      1,
+      "1.000"
+    ],
+    "b": [
+      "5525.10000",
+      1,
+      "1.000"
+    ],
+    "c": [
+      "5525.10000",
+      "0.00398963"
+    ],
+    "h": [
+      "5783.00000",
+      "5783.00000"
+    ],
+    "l": [
+      "5505.00000",
+      "5505.00000"
+    ],
+    "o": [
+      "5760.70000",
+      "5763.40000"
+    ],
+    "p": [
+      "5631.44067",
+      "5653.78939"
+    ],
+    "t": [
+      11493,
+      16267
+    ],
+    "v": [
+      "2634.11501494",
+      "3591.17907851"
+    ]
+  },
+  "ticker",
+  "XBT/USD"
+]`)
+	err = k.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestWsOHLC(t *testing.T) {
+	pressXToJSON := []byte(`{
+  "channelID": 13337,
+  "channelName": "ohlc",
+  "event": "subscriptionStatus",
+  "pair": "XBT/EUR",
+  "status": "subscribed",
+  "subscription": {
+    "name": "ohlc"
+  }
+}`)
+	err := k.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+	pressXToJSON = []byte(`[
+  13337,
+  [
+    "1542057314.748456",
+    "1542057360.435743",
+    "3586.70000",
+    "3586.70000",
+    "3586.60000",
+    "3586.60000",
+    "3586.68894",
+    "0.03373000",
+    2
+  ],
+  "ohlc-5",
+  "XBT/USD"
+]`)
+	err = k.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestWsTrade(t *testing.T) {
+	pressXToJSON := []byte(`{
+  "channelID": 133337,
+  "channelName": "trade",
+  "event": "subscriptionStatus",
+  "pair": "XBT/EUR",
+  "status": "subscribed",
+  "subscription": {
+    "name": "trade"
+  }
+}`)
+	err := k.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+	pressXToJSON = []byte(`[
+  133337,
+  [
+    [
+      "5541.20000",
+      "0.15850568",
+      "1534614057.321597",
+      "s",
+      "l",
+      ""
+    ],
+    [
+      "6060.00000",
+      "0.02455000",
+      "1534614057.324998",
+      "b",
+      "l",
+      ""
+    ]
+  ],
+  "trade",
+  "XBT/USD"
+]`)
+	err = k.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestWsSpread(t *testing.T) {
+	pressXToJSON := []byte(`{
+  "channelID": 1333337,
+  "channelName": "spread",
+  "event": "subscriptionStatus",
+  "pair": "XBT/EUR",
+  "status": "subscribed",
+  "subscription": {
+    "name": "spread"
+  }
+}`)
+	err := k.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+	pressXToJSON = []byte(`[
+  1333337,
+  [
+    "5698.40000",
+    "5700.00000",
+    "1542057299.545897",
+    "1.01234567",
+    "0.98765432"
+  ],
+  "spread",
+  "XBT/USD"
+]`)
+	err = k.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestWsOrdrbook(t *testing.T) {
+	pressXToJSON := []byte(`{
+  "channelID": 13333337,
+  "channelName": "book",
+  "event": "subscriptionStatus",
+  "pair": "XBT/EUR",
+  "status": "subscribed",
+  "subscription": {
+    "name": "book"
+  }
+}`)
+	err := k.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+	pressXToJSON = []byte(`[
+  13333337,
+  {
+    "as": [
+      [
+        "5541.30000",
+        "2.50700000",
+        "1534614248.123678"
+      ],
+      [
+        "5541.80000",
+        "0.33000000",
+        "1534614098.345543"
+      ],
+      [
+        "5542.70000",
+        "0.64700000",
+        "1534614244.654432"
+      ]
+    ],
+    "bs": [
+      [
+        "5541.20000",
+        "1.52900000",
+        "1534614248.765567"
+      ],
+      [
+        "5539.90000",
+        "0.30000000",
+        "1534614241.769870"
+      ],
+      [
+        "5539.50000",
+        "5.00000000",
+        "1534613831.243486"
+      ]
+    ]
+  },
+  "book-100",
+  "XBT/USD"
+]`)
+	err = k.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+	pressXToJSON = []byte(`[
+  13333337,
+  {
+    "a": [
+      [
+        "5541.30000",
+        "2.50700000",
+        "1534614248.456738"
+      ],
+      [
+        "5542.50000",
+        "0.40100000",
+        "1534614248.456738"
+      ]
+    ]
+  },
+  "book-10",
+  "XBT/USD"
+]`)
+	err = k.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+	pressXToJSON = []byte(`[
+  13333337,
+  {
+    "b": [
+      [
+        "5541.30000",
+        "0.00000000",
+        "1534614335.345903"
+      ]
+    ]
+  },
+  "book-10",
+  "XBT/USD"
+]`)
+	err = k.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestWsOwnTrades(t *testing.T) {
+	pressXToJSON := []byte(`[
+  [
+    {
+      "TDLH43-DVQXD-2KHVYY": {
+        "cost": "1000000.00000",
+        "fee": "1600.00000",
+        "margin": "0.00000",
+        "ordertxid": "TDLH43-DVQXD-2KHVYY",
+        "ordertype": "limit",
+        "pair": "XBT/USD",
+        "postxid": "OGTT3Y-C6I3P-XRI6HX",
+        "price": "100000.00000",
+        "time": "1560516023.070651",
+        "type": "sell",
+        "vol": "1000000000.00000000"
+      }
+    },
+    {
+      "TDLH43-DVQXD-2KHVYY": {
+        "cost": "1000000.00000",
+        "fee": "600.00000",
+        "margin": "0.00000",
+        "ordertxid": "TDLH43-DVQXD-2KHVYY",
+        "ordertype": "limit",
+        "pair": "XBT/USD",
+        "postxid": "OGTT3Y-C6I3P-XRI6HX",
+        "price": "100000.00000",
+        "time": "1560516023.070658",
+        "type": "buy",
+        "vol": "1000000000.00000000"
+      }
+    },
+    {
+      "TDLH43-DVQXD-2KHVYY": {
+        "cost": "1000000.00000",
+        "fee": "1600.00000",
+        "margin": "0.00000",
+        "ordertxid": "TDLH43-DVQXD-2KHVYY",
+        "ordertype": "limit",
+        "pair": "XBT/USD",
+        "postxid": "OGTT3Y-C6I3P-XRI6HX",
+        "price": "100000.00000",
+        "time": "1560520332.914657",
+        "type": "sell",
+        "vol": "1000000000.00000000"
+      }
+    },
+    {
+      "TDLH43-DVQXD-2KHVYY": {
+        "cost": "1000000.00000",
+        "fee": "600.00000",
+        "margin": "0.00000",
+        "ordertxid": "TDLH43-DVQXD-2KHVYY",
+        "ordertype": "limit",
+        "pair": "XBT/USD",
+        "postxid": "OGTT3Y-C6I3P-XRI6HX",
+        "price": "100000.00000",
+        "time": "1560520332.914664",
+        "type": "buy",
+        "vol": "1000000000.00000000"
+      }
+    }
+  ],
+  "ownTrades"
+]`)
+	err := k.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestWsOpenOrders(t *testing.T) {
+	pressXToJSON := []byte(`[
+  [
+    {
+      "OGTT3Y-C6I3P-XRI6HX": {
+        "cost": "0.00000",
+        "descr": {
+          "close": "",
+          "leverage": "0:1",
+          "order": "sell 10.00345345 XBT/USD @ limit 34.50000 with 0:1 leverage",
+          "ordertype": "limit",
+          "pair": "XBT/USD",
+          "price": "34.50000",
+          "price2": "0.00000",
+          "type": "sell"
+        },
+        "expiretm": "0.000000",
+        "fee": "0.00000",
+        "limitprice": "34.50000",
+        "misc": "",
+        "oflags": "fcib",
+        "opentm": "0.000000",
+        "price": "34.50000",
+        "refid": "OKIVMP-5GVZN-Z2D2UA",
+        "starttm": "0.000000",
+        "status": "open",
+        "stopprice": "0.000000",
+        "userref": 0,
+        "vol": "10.00345345",
+        "vol_exec": "0.00000000"
+      }
+    },
+    {
+      "OGTT3Y-C6I3P-XRI6HX": {
+        "cost": "0.00000",
+        "descr": {
+          "close": "",
+          "leverage": "0:1",
+          "order": "sell 0.00000010 XBT/USD @ limit 5334.60000 with 0:1 leverage",
+          "ordertype": "limit",
+          "pair": "XBT/USD",
+          "price": "5334.60000",
+          "price2": "0.00000",
+          "type": "sell"
+        },
+        "expiretm": "0.000000",
+        "fee": "0.00000",
+        "limitprice": "5334.60000",
+        "misc": "",
+        "oflags": "fcib",
+        "opentm": "0.000000",
+        "price": "5334.60000",
+        "refid": "OKIVMP-5GVZN-Z2D2UA",
+        "starttm": "0.000000",
+        "status": "open",
+        "stopprice": "0.000000",
+        "userref": 0,
+        "vol": "0.00000010",
+        "vol_exec": "0.00000000"
+      }
+    },
+    {
+      "OGTT3Y-C6I3P-XRI6HX": {
+        "cost": "0.00000",
+        "descr": {
+          "close": "",
+          "leverage": "0:1",
+          "order": "sell 0.00001000 XBT/USD @ limit 90.40000 with 0:1 leverage",
+          "ordertype": "limit",
+          "pair": "XBT/USD",
+          "price": "90.40000",
+          "price2": "0.00000",
+          "type": "sell"
+        },
+        "expiretm": "0.000000",
+        "fee": "0.00000",
+        "limitprice": "90.40000",
+        "misc": "",
+        "oflags": "fcib",
+        "opentm": "0.000000",
+        "price": "90.40000",
+        "refid": "OKIVMP-5GVZN-Z2D2UA",
+        "starttm": "0.000000",
+        "status": "open",
+        "stopprice": "0.000000",
+        "userref": 0,
+        "vol": "0.00001000",
+        "vol_exec": "0.00000000"
+      }
+    },
+    {
+      "OGTT3Y-C6I3P-XRI6HX": {
+        "cost": "0.00000",
+        "descr": {
+          "close": "",
+          "leverage": "0:1",
+          "order": "sell 0.00001000 XBT/USD @ limit 9.00000 with 0:1 leverage",
+          "ordertype": "limit",
+          "pair": "XBT/USD",
+          "price": "9.00000",
+          "price2": "0.00000",
+          "type": "sell"
+        },
+        "expiretm": "0.000000",
+        "fee": "0.00000",
+        "limitprice": "9.00000",
+        "misc": "",
+        "oflags": "fcib",
+        "opentm": "0.000000",
+        "price": "9.00000",
+        "refid": "OKIVMP-5GVZN-Z2D2UA",
+        "starttm": "0.000000",
+        "status": "open",
+        "stopprice": "0.000000",
+        "userref": 0,
+        "vol": "0.00001000",
+        "vol_exec": "0.00000000"
+      }
+    }
+  ],
+  "openOrders"
+]`)
+	err := k.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+	pressXToJSON = []byte(`[
+  [
+    {
+      "OGTT3Y-C6I3P-XRI6HX": {
+        "status": "closed"
+      }
+    },
+    {
+      "OGTT3Y-C6I3P-XRI6HX": {
+        "status": "closed"
+      }
+    }
+  ],
+  "openOrders"
+]`)
+	err = k.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestWsAddOrderJSON(t *testing.T) {
+	pressXToJSON := []byte(`{
+  "descr": "buy 0.01770000 XBTUSD @ limit 4000",
+  "event": "addOrderStatus",
+  "status": "ok",
+  "txid": "ONPNXH-KMKMU-F4MR5V"
+}`)
+	err := k.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
+	}
+
+	pressXToJSON = []byte(`{
+  "errorMessage": "EOrder:Order minimum not met",
+  "event": "addOrderStatus",
+  "status": "error"
+}`)
+	err = k.wsHandleData(pressXToJSON)
+	if err == nil {
+		t.Error("Expected error")
+	}
+}
+
+func TestWsCancelOrderJSON(t *testing.T) {
+	pressXToJSON := []byte(`{
+  "event": "cancelOrderStatus",
+  "status": "ok"
+}`)
+	err := k.wsHandleData(pressXToJSON)
+	if err != nil {
+		t.Error(err)
 	}
 }

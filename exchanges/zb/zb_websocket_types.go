@@ -3,22 +3,22 @@ package zb
 import (
 	"encoding/json"
 
-	"github.com/thrasher-/gocryptotrader/currency"
+	"github.com/thrasher-corp/gocryptotrader/currency"
 )
 
 // Subscription defines an initial subscription type to be sent
 type Subscription struct {
 	Event   string `json:"event"`
 	Channel string `json:"channel"`
+	No      int64  `json:"no,string,omitempty"`
 }
 
 // Generic defines a generic fields associated with many return types
 type Generic struct {
 	Code    int64           `json:"code"`
-	Success bool            `json:"success"`
 	Channel string          `json:"channel"`
 	Message interface{}     `json:"message"`
-	No      string          `json:"no"`
+	No      int64           `json:"no,string,omitempty"`
 	Data    json.RawMessage `json:"data"`
 }
 
@@ -43,20 +43,20 @@ type WsTicker struct {
 
 // WsDepth defines websocket orderbook data
 type WsDepth struct {
-	Timestamp int64         `json:"timestamp"`
-	Asks      []interface{} `json:"asks"`
-	Bids      []interface{} `json:"bids"`
+	Timestamp int64           `json:"timestamp"`
+	Asks      [][]interface{} `json:"asks"`
+	Bids      [][]interface{} `json:"bids"`
 }
 
 // WsTrades defines websocket trade data
 type WsTrades struct {
 	Data []struct {
-		Amount    float64 `json:"amount,string"`
-		Price     float64 `json:"price,string"`
-		TID       int64   `json:"tid"`
-		Date      int64   `json:"date"`
-		Type      string  `json:"type"`
-		TradeType string  `json:"trade_type"`
+		Amount    float64     `json:"amount,string"`
+		Price     float64     `json:"price,string"`
+		TID       interface{} `json:"tid"`
+		Date      int64       `json:"date"`
+		Type      string      `json:"type"`
+		TradeType string      `json:"trade_type"`
 	} `json:"data"`
 }
 
@@ -65,7 +65,7 @@ type WsAuthenticatedRequest struct {
 	Accesskey string `json:"accesskey"`
 	Channel   string `json:"channel"`
 	Event     string `json:"event"`
-	No        string `json:"no,omitempty"`
+	No        int64  `json:"no,string,omitempty"`
 	Sign      string `json:"sign,omitempty"`
 }
 
@@ -74,10 +74,11 @@ type WsAddSubUserRequest struct {
 	Accesskey   string `json:"accesskey"`
 	Channel     string `json:"channel"`
 	Event       string `json:"event"`
-	Sign        string `json:"sign,omitempty"`
 	Memo        string `json:"memo"`
 	Password    string `json:"password"`
 	SubUserName string `json:"subUserName"`
+	No          int64  `json:"no,string,omitempty"`
+	Sign        string `json:"sign,omitempty"`
 }
 
 // WsCreateSubUserKeyRequest data to add sub user keys
@@ -90,7 +91,7 @@ type WsCreateSubUserKeyRequest struct {
 	KeyName     string `json:"keyName"`
 	LeverPerm   bool   `json:"leverPerm,string"`
 	MoneyPerm   bool   `json:"moneyPerm,string"`
-	No          string `json:"no"`
+	No          int64  `json:"no,string,omitempty"`
 	Sign        string `json:"sign,omitempty"`
 	ToUserID    string `json:"toUserId"`
 }
@@ -103,7 +104,7 @@ type WsDoTransferFundsRequest struct {
 	Currency     currency.Code `json:"currency"`
 	Event        string        `json:"event"`
 	FromUserName string        `json:"fromUserName"`
-	No           string        `json:"no"`
+	No           int64         `json:"no,string"`
 	Sign         string        `json:"sign,omitempty"`
 	ToUserName   string        `json:"toUserName"`
 }
@@ -114,7 +115,7 @@ type WsGetSubUserListResponse struct {
 	Code    int64                          `json:"code"`
 	Channel string                         `json:"channel"`
 	Message []WsGetSubUserListResponseData `json:"message"`
-	No      string                         `json:"no"`
+	No      int64                          `json:"no,string"`
 }
 
 // WsGetSubUserListResponseData user data
@@ -132,7 +133,7 @@ type WsRequestResponse struct {
 	Code    int64       `json:"code"`
 	Channel string      `json:"channel"`
 	Message interface{} `json:"message"`
-	No      string      `json:"no"`
+	No      int64       `json:"no,string"`
 }
 
 // WsSubmitOrderRequest creates an order via ws
@@ -141,7 +142,7 @@ type WsSubmitOrderRequest struct {
 	Amount    float64 `json:"amount,string"`
 	Channel   string  `json:"channel"`
 	Event     string  `json:"event"`
-	No        string  `json:"no,omitempty"`
+	No        int64   `json:"no,string,omitempty"`
 	Price     float64 `json:"price,string"`
 	Sign      string  `json:"sign,omitempty"`
 	TradeType int64   `json:"tradeType,string"`
@@ -150,7 +151,7 @@ type WsSubmitOrderRequest struct {
 // WsSubmitOrderResponse data about submitted order
 type WsSubmitOrderResponse struct {
 	Message string `json:"message"`
-	No      string `json:"no"`
+	No      int64  `json:"no,string"`
 	Data    struct {
 		EntrustID int64 `json:"intrustID"`
 	} `json:"data"`
@@ -166,12 +167,13 @@ type WsCancelOrderRequest struct {
 	Event     string `json:"event"`
 	ID        int64  `json:"id"`
 	Sign      string `json:"sign,omitempty"`
+	No        int64  `json:"no,string"`
 }
 
 // WsCancelOrderResponse order cancel response
 type WsCancelOrderResponse struct {
 	Message string `json:"message"`
-	No      string `json:"no"`
+	No      int64  `json:"no,string"`
 	Code    int64  `json:"code"`
 	Channel string `json:"channel"`
 	Success bool   `json:"success"`
@@ -184,31 +186,17 @@ type WsGetOrderRequest struct {
 	Event     string `json:"event"`
 	ID        int64  `json:"id"`
 	Sign      string `json:"sign,omitempty"`
+	No        int64  `json:"no,string"`
 }
 
 // WsGetOrderResponse contains order data
 type WsGetOrderResponse struct {
-	Message string                 `json:"message"`
-	No      string                 `json:"no"`
-	Code    int64                  `json:"code"`
-	Channel string                 `json:"channel"`
-	Success bool                   `json:"success"`
-	Data    WsGetOrderResponseData `json:"data"`
-}
-
-// WsGetOrderResponseData Detailed order data
-type WsGetOrderResponseData struct {
-	Currency    string  `json:"currency"`
-	Fees        float64 `json:"fees"`
-	ID          string  `json:"id"`
-	Price       float64 `json:"price"`
-	Status      int64   `json:"status"`
-	TotalAmount float64 `json:"total_amount"`
-	TradeAmount float64 `json:"trade_amount"`
-	TradePrice  float64 `json:"trade_price"`
-	TradeDate   int64   `json:"trade_date"`
-	TradeMoney  float64 `json:"trade_money"`
-	Type        int64   `json:"type"`
+	Message string  `json:"message"`
+	No      int64   `json:"no,string"`
+	Code    int64   `json:"code"`
+	Channel string  `json:"channel"`
+	Success bool    `json:"success"`
+	Data    []Order `json:"data"`
 }
 
 // WsGetOrdersRequest get more orders, with no orderID filtering
@@ -216,6 +204,7 @@ type WsGetOrdersRequest struct {
 	Accesskey string `json:"accesskey"`
 	Channel   string `json:"channel"`
 	Event     string `json:"event"`
+	No        int64  `json:"no,string"`
 	PageIndex int64  `json:"pageIndex"`
 	TradeType int64  `json:"tradeType"`
 	Sign      string `json:"sign,omitempty"`
@@ -223,12 +212,12 @@ type WsGetOrdersRequest struct {
 
 // WsGetOrdersResponse contains orders data
 type WsGetOrdersResponse struct {
-	Message string                   `json:"message"`
-	No      string                   `json:"no"`
-	Code    int64                    `json:"code"`
-	Channel string                   `json:"channel"`
-	Success bool                     `json:"success"`
-	Data    []WsGetOrderResponseData `json:"data"`
+	Message string  `json:"message"`
+	No      int64   `json:"no,string"`
+	Code    int64   `json:"code"`
+	Channel string  `json:"channel"`
+	Success bool    `json:"success"`
+	Data    []Order `json:"data"`
 }
 
 // WsGetOrdersIgnoreTradeTypeRequest ws request
@@ -236,7 +225,7 @@ type WsGetOrdersIgnoreTradeTypeRequest struct {
 	Accesskey string `json:"accesskey"`
 	Channel   string `json:"channel"`
 	Event     string `json:"event"`
-	ID        int64  `json:"id"`
+	No        int64  `json:"no,string"`
 	PageIndex int64  `json:"pageIndex"`
 	PageSize  int64  `json:"pageSize"`
 	Sign      string `json:"sign,omitempty"`
@@ -244,36 +233,57 @@ type WsGetOrdersIgnoreTradeTypeRequest struct {
 
 // WsGetOrdersIgnoreTradeTypeResponse contains orders data
 type WsGetOrdersIgnoreTradeTypeResponse struct {
-	Message string                   `json:"message"`
-	No      string                   `json:"no"`
-	Code    int64                    `json:"code"`
-	Channel string                   `json:"channel"`
-	Success bool                     `json:"success"`
-	Data    []WsGetOrderResponseData `json:"data"`
+	Message string  `json:"message"`
+	No      int64   `json:"no,string"`
+	Code    int64   `json:"code"`
+	Channel string  `json:"channel"`
+	Success bool    `json:"success"`
+	Data    []Order `json:"data"`
 }
 
 // WsGetAccountInfoResponse contains account data
 type WsGetAccountInfoResponse struct {
 	Message string `json:"message"`
-	No      string `json:"no"`
+	No      int64  `json:"no,string"`
 	Data    struct {
-		Coins []struct {
-			Freez       float64 `json:"freez,string"`
-			EnName      string  `json:"enName"`
-			UnitDecimal int     `json:"unitDecimal"`
-			CnName      string  `json:"cnName"`
-			UnitTag     string  `json:"unitTag"`
-			Available   float64 `json:"available,string"`
-			Key         string  `json:"key"`
-		} `json:"coins"`
-		Base struct {
-			Username             string `json:"username"`
-			TradePasswordEnabled bool   `json:"trade_password_enabled"`
-			AuthGoogleEnabled    bool   `json:"auth_google_enabled"`
-			AuthMobileEnabled    bool   `json:"auth_mobile_enabled"`
-		} `json:"base"`
+		Coins []AccountsResponseCoin `json:"coins"`
+		Base  AccountsBaseResponse   `json:"base"`
 	} `json:"data"`
-	Code    int    `json:"code"`
+	Code    int64  `json:"code"`
 	Channel string `json:"channel"`
 	Success bool   `json:"success"`
+}
+
+var wsErrCodes = map[int64]string{
+	1000: "Successful call",
+	1001: "General error message",
+	1002: "internal error",
+	1003: "Verification failed",
+	1004: "Financial security password lock",
+	1005: "The fund security password is incorrect. Please confirm and re-enter.",
+	1006: "Real-name certification is awaiting review or review",
+	1007: "Channel is empty",
+	1008: "Event is empty",
+	1009: "This interface is being maintained",
+	1011: "Not open yet",
+	1012: "Insufficient permissions",
+	1013: "Can not trade, if you have any questions, please contact online customer service",
+	1014: "Cannot be sold during the pre-sale period",
+	2002: "Insufficient balance in Bitcoin account",
+	2003: "Insufficient balance of Litecoin account",
+	2005: "Insufficient balance in Ethereum account",
+	2006: "Insufficient balance in ETC currency account",
+	2007: "Insufficient balance of BTS currency account",
+	2008: "Insufficient balance in EOS currency account",
+	2009: "Insufficient account balance",
+	3001: "Pending order not found",
+	3002: "Invalid amount",
+	3003: "Invalid quantity",
+	3004: "User does not exist",
+	3005: "Invalid parameter",
+	3006: "Invalid IP or inconsistent with the bound IP",
+	3007: "Request time has expired",
+	3008: "Transaction history not found",
+	4001: "API interface is locked",
+	4002: "Request too frequently",
 }

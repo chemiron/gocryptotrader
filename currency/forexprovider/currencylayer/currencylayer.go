@@ -1,6 +1,6 @@
-// Currencylayer provides a simple REST API with real-time and historical
-// exchange rates for 168 world currencies, delivering currency pairs in
-// universally usable JSON format - compatible with any of your applications.
+// Package currencylayer provides a simple REST API with real-time and
+// historical exchange rates for 168 world currencies, delivering currency pairs
+// in universally usable JSON format - compatible with any of your applications.
 // Spot exchange rate data is retrieved from several major forex data providers
 // in real-time, validated, processed and delivered hourly, every 10 minutes, or
 // even within the 60-second market window.
@@ -8,55 +8,30 @@
 // ("midpoint" value) for every API request, the currencylayer API powers
 // currency converters, mobile applications, financial software components and
 // back-office systems all around the world.
-
+// https://currencylayer.com/product for product information
+// https://currencylayer.com/documentation for API documentation and supported
+// functionality
 package currencylayer
 
 import (
+	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
-	"time"
+	"strings"
 
-	"github.com/thrasher-/gocryptotrader/common"
-	"github.com/thrasher-/gocryptotrader/currency/forexprovider/base"
-	"github.com/thrasher-/gocryptotrader/exchanges/request"
-	log "github.com/thrasher-/gocryptotrader/logger"
+	"github.com/thrasher-corp/gocryptotrader/common"
+	"github.com/thrasher-corp/gocryptotrader/currency/forexprovider/base"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/request"
+	"github.com/thrasher-corp/gocryptotrader/log"
 )
-
-// const declarations consist of endpoints and APIKey privileges
-const (
-	AccountFree = iota
-	AccountBasic
-	AccountPro
-	AccountEnterprise
-
-	APIEndpointURL        = "http://apilayer.net/api/"
-	APIEndpointURLSSL     = "https://apilayer.net/api/"
-	APIEndpointList       = "list"
-	APIEndpointLive       = "live"
-	APIEndpointHistorical = "historical"
-	APIEndpointConversion = "convert"
-	APIEndpointTimeframe  = "timeframe"
-	APIEndpointChange     = "change"
-
-	authRate   = 0
-	unAuthRate = 0
-)
-
-// CurrencyLayer is a foreign exchange rate provider at
-// https://currencylayer.com NOTE default base currency is USD when using a free
-// account. Has automatic upgrade to a SSL connection.
-type CurrencyLayer struct {
-	base.Base
-	Requester *request.Requester
-}
 
 // Setup sets appropriate values for CurrencyLayer
 func (c *CurrencyLayer) Setup(config base.Settings) error {
 	if config.APIKeyLvl < 0 || config.APIKeyLvl > 3 {
-		log.Errorf("apikey incorrectly set in config.json for %s, please set appropriate account levels",
+		log.Errorf(log.Global,
+			"apikey incorrectly set in config.json for %s, please set appropriate account levels\n",
 			config.Name)
 		return errors.New("apikey set failure")
 	}
@@ -68,9 +43,8 @@ func (c *CurrencyLayer) Setup(config base.Settings) error {
 	c.RESTPollingDelay = config.RESTPollingDelay
 	c.Verbose = config.Verbose
 	c.PrimaryProvider = config.PrimaryProvider
+	// Rate limit is based off a monthly counter - Open limit used.
 	c.Requester = request.New(c.Name,
-		request.NewRateLimit(time.Second*10, authRate),
-		request.NewRateLimit(time.Second*10, unAuthRate),
 		common.NewHTTPClientWithTimeout(base.DefaultTimeOut))
 
 	return nil
@@ -125,7 +99,7 @@ func (c *CurrencyLayer) GetliveData(currencies, source string) (map[string]float
 func (c *CurrencyLayer) GetHistoricalData(date string, currencies []string, source string) (map[string]float64, error) {
 	var resp HistoricalRates
 	v := url.Values{}
-	v.Set("currencies", common.JoinStrings(currencies, ","))
+	v.Set("currencies", strings.Join(currencies, ","))
 	v.Set("source", source)
 	v.Set("date", date)
 
@@ -179,7 +153,7 @@ func (c *CurrencyLayer) QueryTimeFrame(startDate, endDate, baseCurrency string, 
 	v.Set("start_date", startDate)
 	v.Set("end_date", endDate)
 	v.Set("base", baseCurrency)
-	v.Set("currencies", common.JoinStrings(currencies, ","))
+	v.Set("currencies", strings.Join(currencies, ","))
 
 	err := c.SendHTTPRequest(APIEndpointTimeframe, v, &resp)
 	if err != nil {
@@ -205,7 +179,7 @@ func (c *CurrencyLayer) QueryCurrencyChange(startDate, endDate, baseCurrency str
 	v.Set("start_date", startDate)
 	v.Set("end_date", endDate)
 	v.Set("base", baseCurrency)
-	v.Set("currencies", common.JoinStrings(currencies, ","))
+	v.Set("currencies", strings.Join(currencies, ","))
 
 	err := c.SendHTTPRequest(APIEndpointChange, v, &resp)
 	if err != nil {
@@ -226,20 +200,17 @@ func (c *CurrencyLayer) SendHTTPRequest(endPoint string, values url.Values, resu
 
 	var auth bool
 	if c.APIKeyLvl == AccountFree {
-		path = fmt.Sprintf("%s%s%s", APIEndpointURL, endPoint, "?")
+		path = APIEndpointURL + endPoint + "?"
 	} else {
 		auth = true
-		path = fmt.Sprintf("%s%s%s", APIEndpointURLSSL, endPoint, "?")
+		path = APIEndpointURLSSL + endPoint + "?"
 	}
 	path += values.Encode()
 
-	return c.Requester.SendPayload(http.MethodGet,
-		path,
-		nil,
-		nil,
-		&result,
-		auth,
-		false,
-		c.Verbose,
-		false)
+	return c.Requester.SendPayload(context.Background(), &request.Item{
+		Method:      http.MethodGet,
+		Path:        path,
+		Result:      &result,
+		AuthRequest: auth,
+		Verbose:     c.Verbose})
 }

@@ -1,10 +1,10 @@
-<img src="https://github.com/thrasher-/gocryptotrader/blob/master/web/src/assets/page-logo.png?raw=true" width="350px" height="350px" hspace="70">
+<img src="https://github.com/thrasher-corp/gocryptotrader/blob/master/web/src/assets/page-logo.png?raw=true" width="350px" height="350px" hspace="70">
 
-[![Build Status](https://travis-ci.com/thrasher-/gocryptotrader.svg?branch=master)](https://travis-ci.com/thrasher-/gocryptotrader)
-[![Software License](https://img.shields.io/badge/License-MIT-orange.svg?style=flat-square)](https://github.com/thrasher-/gocryptotrader/blob/master/LICENSE)
-[![GoDoc](https://godoc.org/github.com/thrasher-/gocryptotrader?status.svg)](https://godoc.org/github.com/thrasher-/gocryptotrader)
-[![Coverage Status](http://codecov.io/github/thrasher-/gocryptotrader/coverage.svg?branch=master)](http://codecov.io/github/thrasher-/gocryptotrader?branch=master)
-[![Go Report Card](https://goreportcard.com/badge/github.com/thrasher-/gocryptotrader)](https://goreportcard.com/report/github.com/thrasher-/gocryptotrader)
+[![Build Status](https://travis-ci.com/thrasher-corp/gocryptotrader.svg?branch=master)](https://travis-ci.com/thrasher-corp/gocryptotrader)
+[![Software License](https://img.shields.io/badge/License-MIT-orange.svg?style=flat-square)](https://github.com/thrasher-corp/gocryptotrader/blob/master/LICENSE)
+[![GoDoc](https://godoc.org/github.com/thrasher-corp/gocryptotrader?status.svg)](https://godoc.org/github.com/thrasher-corp/gocryptotrader)
+[![Coverage Status](http://codecov.io/github/thrasher-corp/gocryptotrader/coverage.svg?branch=master)](http://codecov.io/github/thrasher-corp/gocryptotrader?branch=master)
+[![Go Report Card](https://goreportcard.com/badge/github.com/thrasher-corp/gocryptotrader)](https://goreportcard.com/report/github.com/thrasher-corp/gocryptotrader)
 
 A cryptocurrency trading bot supporting multiple exchanges written in Golang.
 
@@ -12,14 +12,13 @@ A cryptocurrency trading bot supporting multiple exchanges written in Golang.
 
 ## Community
 
-Join our slack to discuss all things related to GoCryptoTrader! [GoCryptoTrader Slack](https://join.slack.com/t/gocryptotrader/shared_invite/enQtNTQ5NDAxMjA2Mjc5LTQyYjIxNGVhMWU5MDZlOGYzMmE0NTJmM2MzYWY5NGMzMmM4MzUwNTBjZTEzNjIwODM5NDcxODQwZDljMGQyNGY)
+Join our slack to discuss all things related to GoCryptoTrader! [GoCryptoTrader Slack](https://join.slack.com/t/gocryptotrader/shared_invite/enQtNTQ5NDAxMjA2Mjc5LTc5ZDE1ZTNiOGM3ZGMyMmY1NTAxYWZhODE0MWM5N2JlZDk1NDU0YTViYzk4NTk3OTRiMDQzNGQ1YTc4YmRlMTk)
 
 ## Exchange Support Table
 
 | Exchange | REST API | Streaming API | FIX API |
 |----------|------|-----------|-----|
 | Alphapoint | Yes  | Yes        | NA  |
-| ANXPRO | Yes  | No        | NA  |
 | Binance| Yes  | Yes        | NA  |
 | Bitfinex | Yes  | Yes        | NA  |
 | Bitflyer | Yes  | No      | NA  |
@@ -32,13 +31,14 @@ Join our slack to discuss all things related to GoCryptoTrader! [GoCryptoTrader 
 | COINUT | Yes | Yes | NA |
 | Exmo | Yes | NA | NA |
 | CoinbasePro | Yes | Yes | No|
+| Coinbene | Yes | No | No |
 | GateIO | Yes | Yes | NA |
 | Gemini | Yes | Yes | No |
 | HitBTC | Yes | Yes | No |
 | Huobi.Pro | Yes | Yes | NA |
-| Huobi.Hadax | Yes | Yes | NA |
 | ItBit | Yes | NA | No |
 | Kraken | Yes | Yes | NA |
+| Lbank | Yes | No | NA |
 | LakeBTC | Yes | No | NA |
 | LocalBitcoins | Yes | NA | NA |
 | OKCoin International | Yes | Yes | No |
@@ -53,19 +53,27 @@ We are aiming to support the top 20 highest volume exchanges based off the [Coin
 
 ## Current Features
 
-+ Support for all Exchange fiat and digital currencies, with the ability to individually toggle them on/off.
++ Support for all exchange fiat and digital currencies, with the ability to individually toggle them on/off.
 + AES256 encrypted config file.
 + REST API support for all exchanges.
 + Websocket support for applicable exchanges.
 + Ability to turn off/on certain exchanges.
-+ Ability to adjust manual polling timer for exchanges.
-+ Communication packages (Slack, SMS via SMSGlobal, Telegram and SMTP)
++ Communication packages (Slack, SMS via SMSGlobal, Telegram and SMTP).
 + HTTP rate limiter package.
-+ Forex currency converter packages (CurrencyConverterAPI, CurrencyLayer, Fixer.io, OpenExchangeRates)
++ Unified API for exchange usage.
++ Customisation of HTTP client features including setting a proxy, user agent and adjusting transport settings.
++ NTP client package.
++ Database support (Postgres and SQLite3). See [database](/database/README.md).
++ OTP generation tool. See [gen otp](/cmd/gen_otp).
++ Connection monitor package.
++ gRPC service and JSON RPC proxy. See [gRPC service](/gctrpc/README.md).
++ gRPC client. See [gctcli](/cmd/gctcli/README.md).
++ Forex currency converter packages (CurrencyConverterAPI, CurrencyLayer, Fixer.io, OpenExchangeRates).
 + Packages for handling currency pairs, tickers and orderbooks.
 + Portfolio management tool; fetches balances from supported exchanges and allows for custom address tracking.
 + Basic event trigger system.
-+ WebGUI.
++ Scripting support. See [gctscript](/gctscript/README.md).
++ WebGUI (discontinued).
 
 ## Planned Features
 
@@ -79,7 +87,7 @@ When submitting a PR, please abide by our coding guidelines:
 
 + Code must adhere to the official Go [formatting](https://golang.org/doc/effective_go.html#formatting) guidelines (i.e. uses [gofmt](https://golang.org/cmd/gofmt/)).
 + Code must be documented adhering to the official Go [commentary](https://golang.org/doc/effective_go.html#commentary) guidelines.
-+ Code must adhere to our [coding style](https://github.com/thrasher-/gocryptotrader/blob/master/.github/CONTRIBUTING.md).
++ Code must adhere to our [coding style](https://github.com/thrasher-corp/gocryptotrader/blob/master/.github/CONTRIBUTING.md).
 + Pull requests need to be based on and opened against the `master` branch.
 
 ## Compiling instructions
@@ -93,7 +101,7 @@ GoCryptoTrader is built using [Go Modules](https://github.com/golang/go/wiki/Mod
 Using Go Modules you now clone this repository **outside** your GOPATH
 
 ```bash
-git clone https://github.com/thrasher-/gocryptotrader.git
+git clone https://github.com/thrasher-corp/gocryptotrader.git
 cd gocryptotrader
 go build
 mkdir ~/.gocryptotrader
@@ -103,7 +111,7 @@ cp config_example.json ~/.gocryptotrader/config.json
 ### Windows
 
 ```bash
-git clone https://github.com/thrasher-/gocryptotrader.git
+git clone https://github.com/thrasher-corp/gocryptotrader.git
 cd gocryptotrader
 go build
 copy config_example.json %APPDATA%\GoCryptoTrader\config.json
@@ -114,11 +122,11 @@ copy config_example.json %APPDATA%\GoCryptoTrader\config.json
 
 ## Donations
 
-<img src="https://github.com/thrasher-/gocryptotrader/blob/master/web/src/assets/donate.png?raw=true" hspace="70">
+<img src="https://github.com/thrasher-corp/gocryptotrader/blob/master/web/src/assets/donate.png?raw=true" hspace="70">
 
 If this framework helped you in any way, or you would like to support the developers working on it, please donate Bitcoin to:
 
-***1F5zVDgNjorJ51oGebSvNCrSAHpwGkUdDB***
+***bc1qk0jareu4jytc0cfrhr5wgshsq8282awpavfahc***
 
 ## Binaries
 
@@ -128,41 +136,46 @@ Binaries will be published once the codebase reaches a stable condition.
 
 ### A very special thank you to all who have contributed to this program:
 
-|User|Github|Contribution Amount|
-|--|--|--|
-| thrasher- | https://github.com/thrasher- | 526 |
-| shazbert | https://github.com/shazbert | 166 |
-| gloriousCode | https://github.com/gloriousCode | 146 |
-| ermalguni | https://github.com/ermalguni | 14 |
-| xtda | https://github.com/xtda | 11 |
-| 140am | https://github.com/140am | 8 |
-| marcofranssen | https://github.com/marcofranssen | 8 |
-| vadimzhukck | https://github.com/vadimzhukck | 8 |
-| cranktakular | https://github.com/cranktakular | 5 |
-| crackcomm | https://github.com/crackcomm | 3 |
-| MadCozBadd | https://github.com/MadCozBadd | 2 |
-| andreygrehov | https://github.com/andreygrehov | 2 |
-| bretep | https://github.com/bretep | 2 |
-| woshidama323 | https://github.com/woshidama323 | 2 |
-| gam-phon | https://github.com/gam-phon | 2 |
-| cornelk | https://github.com/cornelk | 2 |
-| if1live | https://github.com/if1live | 2 |
-| soxipy | https://github.com/soxipy | 2 |
-| herenow | https://github.com/herenow | 2 |
-| blombard | https://github.com/blombard | 1 |
-| CodeLingoBot | https://github.com/CodeLingoBot | 1 |
-| CodeLingoTeam | https://github.com/CodeLingoTeam | 1 |
-| Daanikus | https://github.com/Daanikus | 1 |
-| daniel-cohen | https://github.com/daniel-cohen | 1 |
-| frankzougc | https://github.com/frankzougc | 1 |
-| starit | https://github.com/starit | 1 |
-| Jimexist | https://github.com/Jimexist | 1 |
-| lookfirst | https://github.com/lookfirst | 1 |
-| zeldrinn | https://github.com/zeldrinn | 1 |
-| mattkanwisher | https://github.com/mattkanwisher | 1 |
-| mKurrels | https://github.com/mKurrels | 1 |
-| m1kola | https://github.com/m1kola | 1 |
-| cavapoo2 | https://github.com/cavapoo2 | 1 |
-
-
-
+|User|Contribution Amount|
+|--|--|
+| [thrasher-](https://github.com/thrasher-) | 637 |
+| [shazbert](https://github.com/shazbert) | 188 |
+| [gloriousCode](https://github.com/gloriousCode) | 167 |
+| [xtda](https://github.com/xtda) | 42 |
+| [dependabot-preview[bot]](https://github.com/apps/dependabot-preview) | 23 |
+| [ermalguni](https://github.com/ermalguni) | 14 |
+| [vadimzhukck](https://github.com/vadimzhukck) | 10 |
+| [140am](https://github.com/140am) | 8 |
+| [marcofranssen](https://github.com/marcofranssen) | 8 |
+| [MadCozBadd](https://github.com/MadCozBadd) | 7 |
+| [cranktakular](https://github.com/cranktakular) | 5 |
+| [woshidama323](https://github.com/woshidama323) | 3 |
+| [vazha](https://github.com/vazha) | 3 |
+| [crackcomm](https://github.com/crackcomm) | 3 |
+| [andreygrehov](https://github.com/andreygrehov) | 2 |
+| [bretep](https://github.com/bretep) | 2 |
+| [Christian-Achilli](https://github.com/Christian-Achilli) | 2 |
+| [gam-phon](https://github.com/gam-phon) | 2 |
+| [cornelk](https://github.com/cornelk) | 2 |
+| [if1live](https://github.com/if1live) | 2 |
+| [lozdog245](https://github.com/lozdog245) | 2 |
+| [soxipy](https://github.com/soxipy) | 2 |
+| [herenow](https://github.com/herenow) | 2 |
+| [azhang](https://github.com/azhang) | 1 |
+| [blombard](https://github.com/blombard) | 1 |
+| [CodeLingoBot](https://github.com/CodeLingoBot) | 1 |
+| [CodeLingoTeam](https://github.com/CodeLingoTeam) | 1 |
+| [Daanikus](https://github.com/Daanikus) | 1 |
+| [daniel-cohen](https://github.com/daniel-cohen) | 1 |
+| [merkeld](https://github.com/merkeld) | 1 |
+| [DirectX](https://github.com/DirectX) | 1 |
+| [frankzougc](https://github.com/frankzougc) | 1 |
+| [idoall](https://github.com/idoall) | 1 |
+| [mattkanwisher](https://github.com/mattkanwisher) | 1 |
+| [mKurrels](https://github.com/mKurrels) | 1 |
+| [m1kola](https://github.com/m1kola) | 1 |
+| [cavapoo2](https://github.com/cavapoo2) | 1 |
+| [zeldrinn](https://github.com/zeldrinn) | 1 |
+| [starit](https://github.com/starit) | 1 |
+| [Jimexist](https://github.com/Jimexist) | 1 |
+| [lookfirst](https://github.com/lookfirst) | 1 |

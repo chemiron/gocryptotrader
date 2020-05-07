@@ -9,48 +9,24 @@
 package fixer
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
-	"time"
+	"strings"
 
-	"github.com/thrasher-/gocryptotrader/common"
-	"github.com/thrasher-/gocryptotrader/currency/forexprovider/base"
-	"github.com/thrasher-/gocryptotrader/exchanges/request"
-	log "github.com/thrasher-/gocryptotrader/logger"
+	"github.com/thrasher-corp/gocryptotrader/common"
+	"github.com/thrasher-corp/gocryptotrader/currency/forexprovider/base"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/request"
+	"github.com/thrasher-corp/gocryptotrader/log"
 )
-
-const (
-	fixerAPIFree = iota
-	fixerAPIBasic
-	fixerAPIProfessional
-	fixerAPIProfessionalPlus
-	fixerAPIEnterprise
-
-	fixerAPI                 = "http://data.fixer.io/api/"
-	fixerAPISSL              = "https://data.fixer.io/api/"
-	fixerAPILatest           = "latest"
-	fixerAPIConvert          = "convert"
-	fixerAPITimeSeries       = "timeseries"
-	fixerAPIFluctuation      = "fluctuation"
-	fixerSupportedCurrencies = "symbols"
-
-	authRate   = 0
-	unAuthRate = 0
-)
-
-// Fixer is a foreign exchange rate provider at https://fixer.io/
-// NOTE DEFAULT BASE CURRENCY IS EUR upgrade to basic to change
-type Fixer struct {
-	base.Base
-	Requester *request.Requester
-}
 
 // Setup sets appropriate values for fixer object
 func (f *Fixer) Setup(config base.Settings) error {
 	if config.APIKeyLvl < 0 || config.APIKeyLvl > 4 {
-		log.Errorf("apikey incorrectly set in config.json for %s, please set appropriate account levels",
+		log.Errorf(log.Global,
+			"apikey incorrectly set in config.json for %s, please set appropriate account levels\n",
 			config.Name)
 		return errors.New("apikey set failure")
 	}
@@ -62,8 +38,6 @@ func (f *Fixer) Setup(config base.Settings) error {
 	f.Verbose = config.Verbose
 	f.PrimaryProvider = config.PrimaryProvider
 	f.Requester = request.New(f.Name,
-		request.NewRateLimit(time.Second*10, authRate),
-		request.NewRateLimit(time.Second*10, unAuthRate),
 		common.NewHTTPClientWithTimeout(base.DefaultTimeOut))
 	return nil
 }
@@ -142,7 +116,7 @@ func (f *Fixer) GetHistoricalRates(date, baseCurrency string, symbols []string) 
 	var resp Rates
 
 	v := url.Values{}
-	v.Set("symbols", common.JoinStrings(symbols, ","))
+	v.Set("symbols", strings.Join(symbols, ","))
 
 	if baseCurrency != "" {
 		v.Set("base", baseCurrency)
@@ -205,7 +179,7 @@ func (f *Fixer) GetTimeSeriesData(startDate, endDate, baseCurrency string, symbo
 	v.Set("start_date", startDate)
 	v.Set("end_date", endDate)
 	v.Set("base", baseCurrency)
-	v.Set("symbols", common.JoinStrings(symbols, ","))
+	v.Set("symbols", strings.Join(symbols, ","))
 
 	err := f.SendOpenHTTPRequest(fixerAPITimeSeries, v, &resp)
 	if err != nil {
@@ -231,7 +205,7 @@ func (f *Fixer) GetFluctuationData(startDate, endDate, baseCurrency string, symb
 	v.Set("start_date", startDate)
 	v.Set("end_date", endDate)
 	v.Set("base", baseCurrency)
-	v.Set("symbols", common.JoinStrings(symbols, ","))
+	v.Set("symbols", strings.Join(symbols, ","))
 
 	err := f.SendOpenHTTPRequest(fixerAPIFluctuation, v, &resp)
 	if err != nil {
@@ -257,13 +231,10 @@ func (f *Fixer) SendOpenHTTPRequest(endpoint string, v url.Values, result interf
 		auth = true
 	}
 
-	return f.Requester.SendPayload(http.MethodGet,
-		path,
-		nil,
-		nil,
-		result,
-		auth,
-		false,
-		f.Verbose,
-		false)
+	return f.Requester.SendPayload(context.Background(), &request.Item{
+		Method:      http.MethodGet,
+		Path:        path,
+		Result:      &result,
+		AuthRequest: auth,
+		Verbose:     f.Verbose})
 }

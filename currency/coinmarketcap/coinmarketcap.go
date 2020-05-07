@@ -6,65 +6,18 @@
 package coinmarketcap
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/thrasher-/gocryptotrader/common"
-	"github.com/thrasher-/gocryptotrader/exchanges/request"
+	"github.com/thrasher-corp/gocryptotrader/common"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/request"
 )
-
-// Coinmarketcap account plan bitmasks, url and enpoint consts
-const (
-	Basic uint8 = 1 << iota
-	Hobbyist
-	Startup
-	Standard
-	Professional
-	Enterprise
-
-	baseURL    = "https://pro-api.coinmarketcap.com"
-	sandboxURL = "https://sandbox-api.coinmarketcap.com"
-	version    = "/v1/"
-
-	endpointCryptocurrencyInfo               = "cryptocurrency/info"
-	endpointCryptocurrencyMap                = "cryptocurrency/map"
-	endpointCryptocurrencyHistoricalListings = "cryptocurrency/listings/historical"
-	endpointCryptocurrencyLatestListings     = "cryptocurrency/listings/latest"
-	endpointCryptocurrencyMarketPairs        = "cryptocurrency/market-pairs/latest"
-	endpointOHLCVHistorical                  = "cryptocurrency/ohlcv/historical"
-	endpointOHLCVLatest                      = "cryptocurrency/ohlcv/latest"
-	endpointGetMarketQuotesHistorical        = "cryptocurrency/quotes/historical"
-	endpointGetMarketQuotesLatest            = "cryptocurrency/quotes/latest"
-	endpointExchangeInfo                     = "exchange/info"
-	endpointExchangeMap                      = "exchange/map"
-	endpointExchangeMarketPairsLatest        = "exchange/market-pairs/latest"
-	endpointExchangeMarketQuoteHistorical    = "exchange/quotes/historical"
-	endpointExchangeMarketQuoteLatest        = "exchange/quotes/latest"
-	endpointGlobalQuoteHistorical            = "global-metrics/quotes/historical"
-	endpointGlobalQuoteLatest                = "global-metrics/quotes/latest"
-	endpointPriceConversion                  = "tools/price-conversion"
-
-	authrate       = 0
-	defaultTimeOut = time.Second * 15
-)
-
-// Coinmarketcap is the overarching type across this package
-type Coinmarketcap struct {
-	Verbose    bool
-	Enabled    bool
-	Name       string
-	APIkey     string
-	APIUrl     string
-	APIVersion string
-	Plan       uint8
-	Requester  *request.Requester
-}
 
 // SetDefaults sets default values for the exchange
 func (c *Coinmarketcap) SetDefaults() {
@@ -74,24 +27,22 @@ func (c *Coinmarketcap) SetDefaults() {
 	c.APIUrl = baseURL
 	c.APIVersion = version
 	c.Requester = request.New(c.Name,
-		request.NewRateLimit(time.Second*10, authrate),
-		request.NewRateLimit(time.Second*10, authrate),
-		common.NewHTTPClientWithTimeout(defaultTimeOut))
+		common.NewHTTPClientWithTimeout(defaultTimeOut),
+		request.WithLimiter(request.NewBasicRateLimit(RateInterval, BasicRequestRate)),
+	)
 }
 
 // Setup sets user configuration
-func (c *Coinmarketcap) Setup(conf Settings) {
+func (c *Coinmarketcap) Setup(conf Settings) error {
 	if !conf.Enabled {
 		c.Enabled = false
-	} else {
-		c.Enabled = true
-		c.Verbose = conf.Verbose
-		c.APIkey = conf.APIkey
-		err := c.SetAccountPlan(conf.AccountPlan)
-		if err != nil {
-			log.Fatal(err)
-		}
+		return nil
 	}
+
+	c.Enabled = true
+	c.Verbose = conf.Verbose
+	c.APIkey = conf.APIkey
+	return c.SetAccountPlan(conf.AccountPlan)
 }
 
 // GetCryptocurrencyInfo returns all static metadata for one or more
@@ -158,28 +109,28 @@ func (c *Coinmarketcap) GetCryptocurrencyIDMap() ([]CryptoCurrencyMap, error) {
 // GetCryptocurrencyHistoricalListings returns a paginated list of all
 // cryptocurrencies with market data for a given historical time.
 func (c *Coinmarketcap) GetCryptocurrencyHistoricalListings() ([]CryptocurrencyHistoricalListings, error) {
-	return nil, errors.New("this endpoint is not yet available")
+	return nil, common.ErrNotYetImplemented
 	// NOTE unreachable code but will be utilised at a later date
 	// resp := struct {
 	// 	Data   []CryptocurrencyHistoricalListings `json:"data"`
 	// 	Status Status                             `json:"status"`
 	// }{}
 
-	// err := c.CheckAccountPlan(0)
+	// nolint: gocritic err := c.CheckAccountPlan(0)
 	// if err != nil {
 	// 	return resp.Data, err
 	// }
 
-	// err = c.SendHTTPRequest(http.MethodGet, endpointCryptocurrencyHistoricalListings, nil, &resp)
+	// nolint: gocritic err = c.SendHTTPRequest(http.MethodGet, endpointCryptocurrencyHistoricalListings, nil, &resp)
 	// if err != nil {
 	// 	return resp.Data, err
 	// }
 
-	//nolint:gocritic if resp.Status.ErrorCode != 0 {
+	// nolint: gocritic nolint:gocritic if resp.Status.ErrorCode != 0 {
 	// 	return resp.Data, errors.New(resp.Status.ErrorMessage)
 	// }
 
-	//nolint:gocritic return resp.Data, nil
+	// nolint: gocritic nolint:gocritic return resp.Data, nil
 }
 
 // GetCryptocurrencyLatestListing returns a paginated list of all
@@ -724,15 +675,13 @@ func (c *Coinmarketcap) SendHTTPRequest(method, endpoint string, v url.Values, r
 		path = path + "?" + v.Encode()
 	}
 
-	return c.Requester.SendPayload(method,
-		path,
-		headers,
-		strings.NewReader(""),
-		result,
-		false,
-		false,
-		c.Verbose,
-		false)
+	return c.Requester.SendPayload(context.Background(), &request.Item{
+		Method:  method,
+		Path:    path,
+		Headers: headers,
+		Body:    strings.NewReader(""),
+		Result:  result,
+		Verbose: c.Verbose})
 }
 
 // CheckAccountPlan checks your current account plan to the minimal account

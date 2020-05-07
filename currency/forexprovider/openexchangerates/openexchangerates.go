@@ -9,62 +9,25 @@
 package openexchangerates
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
-	"time"
+	"strings"
 
-	"github.com/thrasher-/gocryptotrader/common"
-	"github.com/thrasher-/gocryptotrader/currency/forexprovider/base"
-	"github.com/thrasher-/gocryptotrader/exchanges/request"
-	log "github.com/thrasher-/gocryptotrader/logger"
+	"github.com/thrasher-corp/gocryptotrader/common"
+	"github.com/thrasher-corp/gocryptotrader/currency/forexprovider/base"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/request"
+	"github.com/thrasher-corp/gocryptotrader/log"
 )
-
-// These consts contain endpoint information
-const (
-	APIDeveloperAccess = iota
-	APIEnterpriseAccess
-	APIUnlimitedAccess
-
-	APIURL                = "https://openexchangerates.org/api/"
-	APIEndpointLatest     = "latest.json"
-	APIEndpointHistorical = "historical/%s.json"
-	APIEndpointCurrencies = "currencies.json"
-	APIEndpointTimeSeries = "time-series.json"
-	APIEndpointConvert    = "convert/%s/%s/%s"
-	APIEndpointOHLC       = "ohlc.json"
-	APIEndpointUsage      = "usage.json"
-
-	oxrSupportedCurrencies = "AED,AFN,ALL,AMD,ANG,AOA,ARS,AUD,AWG,AZN,BAM,BBD," +
-		"BDT,BGN,BHD,BIF,BMD,BND,BOB,BRL,BSD,BTC,BTN,BWP,BYN,BYR,BZD,CAD,CDF," +
-		"CHF,CLF,CLP,CNH,CNY,COP,CRC,CUC,CUP,CVE,CZK,DJF,DKK,DOP,DZD,EEK,EGP," +
-		"ERN,ETB,EUR,FJD,FKP,GBP,GEL,GGP,GHS,GIP,GMD,GNF,GTQ,GYD,HKD,HNL,HRK," +
-		"HTG,HUF,IDR,ILS,IMP,INR,IQD,IRR,ISK,JEP,JMD,JOD,JPY,KES,KGS,KHR,KMF," +
-		"KPW,KRW,KWD,KYD,KZT,LAK,LBP,LKR,LRD,LSL,LYD,MAD,MDL,MGA,MKD,MMK,MNT," +
-		"MOP,MRO,MRU,MTL,MUR,MVR,MWK,MXN,MYR,MZN,NAD,NGN,NIO,NOK,NPR,NZD,OMR," +
-		"PAB,PEN,PGK,PHP,PKR,PLN,PYG,QAR,RON,RSD,RUB,RWF,SAR,SBD,SCR,SDG,SEK," +
-		"SGD,SHP,SLL,SOS,SRD,SSP,STD,STN,SVC,SYP,SZL,THB,TJS,TMT,TND,TOP,TRY," +
-		"TTD,TWD,TZS,UAH,UGX,USD,UYU,UZS,VEF,VND,VUV,WST,XAF,XAG,XAU,XCD,XDR," +
-		"XOF,XPD,XPF,XPT,YER,ZAR,ZMK,ZMW"
-
-	authRate   = 0
-	unAuthRate = 0
-)
-
-// OXR is a foreign exchange rate provider at https://openexchangerates.org/
-// this is the overarching type across this package
-// DOCs : https://docs.openexchangerates.org/docs
-type OXR struct {
-	base.Base
-	Requester *request.Requester
-}
 
 // Setup sets values for the OXR object
 func (o *OXR) Setup(config base.Settings) error {
 	if config.APIKeyLvl < 0 || config.APIKeyLvl > 2 {
-		log.Errorf("apikey incorrectly set in config.json for %s, please set appropriate account levels",
+		log.Errorf(log.Global,
+			"apikey incorrectly set in config.json for %s, please set appropriate account levels\n",
 			config.Name)
 		return errors.New("apikey set failure")
 	}
@@ -76,8 +39,6 @@ func (o *OXR) Setup(config base.Settings) error {
 	o.Verbose = config.Verbose
 	o.PrimaryProvider = config.PrimaryProvider
 	o.Requester = request.New(o.Name,
-		request.NewRateLimit(time.Second*10, authRate),
-		request.NewRateLimit(time.Second*10, unAuthRate),
 		common.NewHTTPClientWithTimeout(base.DefaultTimeOut))
 	return nil
 }
@@ -126,7 +87,7 @@ func (o *OXR) GetHistoricalRates(date, baseCurrency string, symbols []string, pr
 
 	v := url.Values{}
 	v.Set("base", baseCurrency)
-	v.Set("symbols", common.JoinStrings(symbols, ","))
+	v.Set("symbols", strings.Join(symbols, ","))
 	v.Set("prettyprint", strconv.FormatBool(prettyPrint))
 	v.Set("show_alternative", strconv.FormatBool(showAlternative))
 	endpoint := fmt.Sprintf(APIEndpointHistorical, date)
@@ -156,7 +117,7 @@ func (o *OXR) GetCurrencies(showInactive, prettyPrint, showAlternative bool) (ma
 
 // GetSupportedCurrencies returns a list of supported currencies
 func (o *OXR) GetSupportedCurrencies() ([]string, error) {
-	return common.SplitStrings(oxrSupportedCurrencies, ","), nil
+	return strings.Split(oxrSupportedCurrencies, ","), nil
 }
 
 // GetTimeSeries returns historical exchange rates for a given time period,
@@ -172,7 +133,7 @@ func (o *OXR) GetTimeSeries(baseCurrency, startDate, endDate string, symbols []s
 	v.Set("base", baseCurrency)
 	v.Set("start", startDate)
 	v.Set("end", endDate)
-	v.Set("symbols", common.JoinStrings(symbols, ","))
+	v.Set("symbols", strings.Join(symbols, ","))
 	v.Set("prettyprint", strconv.FormatBool(prettyPrint))
 	v.Set("show_alternative", strconv.FormatBool(showAlternative))
 
@@ -220,7 +181,7 @@ func (o *OXR) GetOHLC(startTime, period, baseCurrency string, symbols []string, 
 	v.Set("start_time", startTime)
 	v.Set("period", period)
 	v.Set("base", baseCurrency)
-	v.Set("symbols", common.JoinStrings(symbols, ","))
+	v.Set("symbols", strings.Join(symbols, ","))
 	v.Set("prettyprint", strconv.FormatBool(prettyPrint))
 
 	if err := o.SendHTTPRequest(APIEndpointOHLC, v, &resp); err != nil {
@@ -257,13 +218,9 @@ func (o *OXR) SendHTTPRequest(endpoint string, values url.Values, result interfa
 	headers["Authorization"] = "Token " + o.APIKey
 	path := APIURL + endpoint + "?" + values.Encode()
 
-	return o.Requester.SendPayload(http.MethodGet,
-		path,
-		headers,
-		nil,
-		result,
-		false,
-		false,
-		o.Verbose,
-		false)
+	return o.Requester.SendPayload(context.Background(), &request.Item{
+		Method:  http.MethodGet,
+		Path:    path,
+		Result:  result,
+		Verbose: o.Verbose})
 }

@@ -3,9 +3,10 @@ package base
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
-	"github.com/thrasher-/gocryptotrader/common"
+	"github.com/thrasher-corp/gocryptotrader/common"
 )
 
 // IFXProvider enforces standard functions for all foreign exchange providers
@@ -49,7 +50,7 @@ func (p *Provider) GetNewRate(base string, currencies []string) (map[string]floa
 		return p.Provider.GetRates(base, "") // Zero value to get all rates
 
 	default:
-		return p.Provider.GetRates(base, common.JoinStrings(currencies, ","))
+		return p.Provider.GetRates(base, strings.Join(currencies, ","))
 	}
 }
 

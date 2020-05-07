@@ -1,40 +1,19 @@
+// Package currencyconverter package
+// https://free.currencyconverterapi.com/
 package currencyconverter
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"net/url"
-	"time"
+	"strings"
 
-	"github.com/thrasher-/gocryptotrader/common"
-	"github.com/thrasher-/gocryptotrader/currency/forexprovider/base"
-	"github.com/thrasher-/gocryptotrader/exchanges/request"
-	log "github.com/thrasher-/gocryptotrader/logger"
+	"github.com/thrasher-corp/gocryptotrader/common"
+	"github.com/thrasher-corp/gocryptotrader/currency/forexprovider/base"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/request"
+	"github.com/thrasher-corp/gocryptotrader/log"
 )
-
-// const declarations consist of endpoints
-const (
-	APIEndpointURL     = "https://currencyconverterapi.com/api/"
-	APIEndpointFreeURL = "https://free.currencyconverterapi.com/api/"
-	APIEndpointVersion = "v5"
-
-	APIEndpointConvert    = "convert"
-	APIEndpointCurrencies = "currencies"
-	APIEndpointCountries  = "countries"
-	APIEndpointUsage      = "usage"
-
-	defaultAPIKey = "Key"
-
-	authRate   = 0
-	unAuthRate = 0
-)
-
-// CurrencyConverter stores the struct for the CurrencyConverter API
-type CurrencyConverter struct {
-	base.Base
-	Requester *request.Requester
-}
 
 // Setup sets appropriate values for CurrencyLayer
 func (c *CurrencyConverter) Setup(config base.Settings) error {
@@ -46,15 +25,14 @@ func (c *CurrencyConverter) Setup(config base.Settings) error {
 	c.Verbose = config.Verbose
 	c.PrimaryProvider = config.PrimaryProvider
 	c.Requester = request.New(c.Name,
-		request.NewRateLimit(time.Second*10, authRate),
-		request.NewRateLimit(time.Second*10, unAuthRate),
-		common.NewHTTPClientWithTimeout(base.DefaultTimeOut))
+		common.NewHTTPClientWithTimeout(base.DefaultTimeOut),
+		request.WithLimiter(request.NewBasicRateLimit(rateInterval, requestRate)))
 	return nil
 }
 
 // GetRates is a wrapper function to return rates
 func (c *CurrencyConverter) GetRates(baseCurrency, symbols string) (map[string]float64, error) {
-	splitSymbols := common.SplitStrings(symbols, ",")
+	splitSymbols := strings.Split(symbols, ",")
 
 	if len(splitSymbols) == 1 {
 		return c.Convert(baseCurrency, symbols)
@@ -75,11 +53,11 @@ func (c *CurrencyConverter) GetRates(baseCurrency, symbols string) (map[string]f
 			batch := completedStrings[i : i+2]
 			result, err := c.ConvertMany(batch)
 			if err != nil {
-				log.Errorf("Failed to get batch err: %s", err)
+				log.Errorf(log.Global, "Failed to get batch err: %s\n", err)
 				continue
 			}
 			for k, v := range result {
-				rates[common.ReplaceString(k, "_", "", -1)] = v
+				rates[strings.Replace(k, "_", "", -1)] = v
 			}
 		}
 	}
@@ -98,7 +76,7 @@ func (c *CurrencyConverter) GetRates(baseCurrency, symbols string) (map[string]f
 	}
 
 	for k, v := range result {
-		rates[common.ReplaceString(k, "_", "", -1)] = v
+		rates[strings.Replace(k, "_", "", -1)] = v
 	}
 
 	return rates, nil
@@ -113,7 +91,7 @@ func (c *CurrencyConverter) ConvertMany(currencies []string) (map[string]float64
 
 	result := make(map[string]float64)
 	v := url.Values{}
-	joined := common.JoinStrings(currencies, ",")
+	joined := strings.Join(currencies, ",")
 	v.Set("q", joined)
 	v.Set("compact", "ultra")
 
@@ -184,15 +162,12 @@ func (c *CurrencyConverter) SendHTTPRequest(endPoint string, values url.Values, 
 	}
 	path += values.Encode()
 
-	err := c.Requester.SendPayload(http.MethodGet,
-		path,
-		nil,
-		nil,
-		&result,
-		auth,
-		false,
-		c.Verbose,
-		false)
+	err := c.Requester.SendPayload(context.Background(), &request.Item{
+		Method:      path,
+		Result:      result,
+		AuthRequest: auth,
+		Verbose:     c.Verbose})
+
 	if err != nil {
 		return fmt.Errorf("currency converter API SendHTTPRequest error %s with path %s",
 			err,

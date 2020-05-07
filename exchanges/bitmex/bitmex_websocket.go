@@ -1,19 +1,24 @@
 package bitmex
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/thrasher-/gocryptotrader/common"
-	"github.com/thrasher-/gocryptotrader/currency"
-	exchange "github.com/thrasher-/gocryptotrader/exchanges"
-	"github.com/thrasher-/gocryptotrader/exchanges/orderbook"
-	log "github.com/thrasher-/gocryptotrader/logger"
+	"github.com/thrasher-corp/gocryptotrader/common/crypto"
+	"github.com/thrasher-corp/gocryptotrader/currency"
+	exchange "github.com/thrasher-corp/gocryptotrader/exchanges"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/asset"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/order"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/orderbook"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/websocket/wshandler"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/websocket/wsorderbook"
+	"github.com/thrasher-corp/gocryptotrader/log"
 )
 
 const (
@@ -28,6 +33,7 @@ const (
 	bitmexWSInsurance           = "insurance"
 	bitmexWSLiquidation         = "liquidation"
 	bitmexWSOrderbookL2         = "orderBookL2"
+	bitmexWSOrderbookL225       = "orderBookL2_25"
 	bitmexWSOrderbookL10        = "orderBook10"
 	bitmexWSPublicNotifications = "publicNotifications"
 	bitmexWSQuote               = "quote"
@@ -58,78 +64,48 @@ const (
 	bitmexActionUpdateData  = "update"
 )
 
-var (
-	pongChan = make(chan int, 1)
-)
-
-// WsConnector initiates a new websocket connection
-func (b *Bitmex) WsConnector() error {
+// WsConnect initiates a new websocket connection
+func (b *Bitmex) WsConnect() error {
 	if !b.Websocket.IsEnabled() || !b.IsEnabled() {
-		return errors.New(exchange.WebsocketNotEnabled)
+		return errors.New(wshandler.WebsocketNotEnabled)
 	}
-
 	var dialer websocket.Dialer
-	var err error
-
-	if b.Websocket.GetProxyAddress() != "" {
-		var proxy *url.URL
-		proxy, err = url.Parse(b.Websocket.GetProxyAddress())
-		if err != nil {
-			return err
-		}
-
-		dialer.Proxy = http.ProxyURL(proxy)
-	}
-
-	b.WebsocketConn, _, err = dialer.Dial(b.Websocket.GetWebsocketURL(), nil)
+	err := b.WebsocketConn.Dial(&dialer, http.Header{})
 	if err != nil {
 		return err
 	}
 
-	_, p, err := b.WebsocketConn.ReadMessage()
+	p, err := b.WebsocketConn.ReadMessage()
 	if err != nil {
+		b.Websocket.ReadMessageErrors <- err
 		return err
 	}
-
+	b.Websocket.TrafficAlert <- struct{}{}
 	var welcomeResp WebsocketWelcome
-	err = common.JSONDecode(p, &welcomeResp)
+	err = json.Unmarshal(p.Raw, &welcomeResp)
 	if err != nil {
 		return err
 	}
 
 	if b.Verbose {
-		log.Debugf("Successfully connected to Bitmex %s at time: %s Limit: %d",
+		log.Debugf(log.ExchangeSys, "Successfully connected to Bitmex %s at time: %s Limit: %d",
 			welcomeResp.Info,
 			welcomeResp.Timestamp,
 			welcomeResp.Limit.Remaining)
 	}
 
-	go b.wsHandleIncomingData()
+	go b.wsReadData()
 	b.GenerateDefaultSubscriptions()
-
 	err = b.websocketSendAuth()
 	if err != nil {
-		log.Errorf("%v - authentication failed: %v", b.Name, err)
+		log.Errorf(log.ExchangeSys, "%v - authentication failed: %v\n", b.Name, err)
 	}
 	b.GenerateAuthenticatedSubscriptions()
 	return nil
 }
 
-func (b *Bitmex) wsReadData() (exchange.WebsocketResponse, error) {
-	_, resp, err := b.WebsocketConn.ReadMessage()
-	if err != nil {
-		return exchange.WebsocketResponse{}, err
-	}
-
-	b.Websocket.TrafficAlert <- struct{}{}
-
-	return exchange.WebsocketResponse{
-		Raw: resp,
-	}, nil
-}
-
-// wsHandleIncomingData services incoming data from the websocket connection
-func (b *Bitmex) wsHandleIncomingData() {
+// wsReadData receives and passes on websocket messages for processing
+func (b *Bitmex) wsReadData() {
 	b.Websocket.Wg.Add(1)
 
 	defer func() {
@@ -142,308 +118,423 @@ func (b *Bitmex) wsHandleIncomingData() {
 			return
 
 		default:
-			resp, err := b.wsReadData()
+			resp, err := b.WebsocketConn.ReadMessage()
 			if err != nil {
 				b.Websocket.DataHandler <- err
 				return
 			}
-
-			message := string(resp.Raw)
-			if common.StringContains(message, "pong") {
-				pongChan <- 1
-				continue
-			}
-
-			if common.StringContains(message, "ping") {
-				err = b.wsSend("pong")
-				if err != nil {
-					b.Websocket.DataHandler <- err
-					continue
-				}
-			}
-
-			quickCapture := make(map[string]interface{})
-			err = common.JSONDecode(resp.Raw, &quickCapture)
+			b.Websocket.TrafficAlert <- struct{}{}
+			err = b.wsHandleData(resp.Raw)
 			if err != nil {
 				b.Websocket.DataHandler <- err
-				continue
-			}
-
-			var respError WebsocketErrorResponse
-			if _, ok := quickCapture["status"]; ok {
-				err = common.JSONDecode(resp.Raw, &respError)
-				if err != nil {
-					b.Websocket.DataHandler <- err
-					continue
-				}
-				b.Websocket.DataHandler <- errors.New(respError.Error)
-				continue
-			}
-
-			if _, ok := quickCapture["success"]; ok {
-				var decodedResp WebsocketSubscribeResp
-				err := common.JSONDecode(resp.Raw, &decodedResp)
-				if err != nil {
-					b.Websocket.DataHandler <- err
-					continue
-				}
-
-				if decodedResp.Success {
-					b.Websocket.DataHandler <- decodedResp
-					if len(quickCapture) == 3 {
-						if b.Verbose {
-							log.Debugf("%s websocket: Successfully subscribed to %s",
-								b.Name, decodedResp.Subscribe)
-						}
-					} else {
-						b.Websocket.SetCanUseAuthenticatedEndpoints(true)
-						if b.Verbose {
-							log.Debugf("%s websocket: Successfully authenticated websocket connection",
-								b.Name)
-						}
-					}
-					continue
-				}
-
-				b.Websocket.DataHandler <- fmt.Errorf("%s websocket error: Unable to subscribe %s",
-					b.Name, decodedResp.Subscribe)
-
-			} else if _, ok := quickCapture["table"]; ok {
-				var decodedResp WebsocketMainResponse
-				err := common.JSONDecode(resp.Raw, &decodedResp)
-				if err != nil {
-					b.Websocket.DataHandler <- err
-					continue
-				}
-
-				switch decodedResp.Table {
-				case bitmexWSOrderbookL2:
-					var orderbooks OrderBookData
-					err = common.JSONDecode(resp.Raw, &orderbooks)
-					if err != nil {
-						b.Websocket.DataHandler <- err
-						continue
-					}
-
-					p := currency.NewPairFromString(orderbooks.Data[0].Symbol)
-					// TODO: update this to support multiple asset types
-					err = b.processOrderbook(orderbooks.Data, orderbooks.Action, p, "CONTRACT")
-					if err != nil {
-						b.Websocket.DataHandler <- err
-						continue
-					}
-
-				case bitmexWSTrade:
-					var trades TradeData
-					err = common.JSONDecode(resp.Raw, &trades)
-					if err != nil {
-						b.Websocket.DataHandler <- err
-						continue
-					}
-
-					if trades.Action == bitmexActionInitialData {
-						continue
-					}
-
-					for _, trade := range trades.Data {
-						var timestamp time.Time
-						timestamp, err = time.Parse(time.RFC3339, trade.Timestamp)
-						if err != nil {
-							b.Websocket.DataHandler <- err
-							continue
-						}
-
-						// TODO: update this to support multiple asset types
-						b.Websocket.DataHandler <- exchange.TradeData{
-							Timestamp:    timestamp,
-							Price:        trade.Price,
-							Amount:       float64(trade.Size),
-							CurrencyPair: currency.NewPairFromString(trade.Symbol),
-							Exchange:     b.GetName(),
-							AssetType:    "CONTRACT",
-							Side:         trade.Side,
-						}
-					}
-
-				case bitmexWSAnnouncement:
-					var announcement AnnouncementData
-					err = common.JSONDecode(resp.Raw, &announcement)
-					if err != nil {
-						b.Websocket.DataHandler <- err
-						continue
-					}
-
-					if announcement.Action == bitmexActionInitialData {
-						continue
-					}
-
-					b.Websocket.DataHandler <- announcement.Data
-				case bitmexWSAffiliate:
-					var response WsAffiliateResponse
-					err = common.JSONDecode(resp.Raw, &response)
-					if err != nil {
-						b.Websocket.DataHandler <- err
-						continue
-					}
-					b.Websocket.DataHandler <- response
-				case bitmexWSExecution:
-					var response WsExecutionResponse
-					err = common.JSONDecode(resp.Raw, &response)
-					if err != nil {
-						b.Websocket.DataHandler <- err
-						continue
-					}
-					b.Websocket.DataHandler <- response
-				case bitmexWSOrder:
-					var response WsOrderResponse
-					err = common.JSONDecode(resp.Raw, &response)
-					if err != nil {
-						b.Websocket.DataHandler <- err
-						continue
-					}
-					b.Websocket.DataHandler <- response
-				case bitmexWSMargin:
-					var response WsMarginResponse
-					err = common.JSONDecode(resp.Raw, &response)
-					if err != nil {
-						b.Websocket.DataHandler <- err
-						continue
-					}
-					b.Websocket.DataHandler <- response
-				case bitmexWSPosition:
-					var response WsPositionResponse
-					err = common.JSONDecode(resp.Raw, &response)
-					if err != nil {
-						b.Websocket.DataHandler <- err
-						continue
-					}
-					b.Websocket.DataHandler <- response
-				case bitmexWSPrivateNotifications:
-					var response WsPrivateNotificationsResponse
-					err = common.JSONDecode(resp.Raw, &response)
-					if err != nil {
-						b.Websocket.DataHandler <- err
-						continue
-					}
-					b.Websocket.DataHandler <- response
-				case bitmexWSTransact:
-					var response WsTransactResponse
-					err = common.JSONDecode(resp.Raw, &response)
-					if err != nil {
-						b.Websocket.DataHandler <- err
-						continue
-					}
-					b.Websocket.DataHandler <- response
-				case bitmexWSWallet:
-					var response WsWalletResponse
-					err = common.JSONDecode(resp.Raw, &response)
-					if err != nil {
-						b.Websocket.DataHandler <- err
-						continue
-					}
-					b.Websocket.DataHandler <- response
-				default:
-					b.Websocket.DataHandler <- fmt.Errorf("%s websocket error: Table unknown - %s",
-						b.Name, decodedResp.Table)
-				}
 			}
 		}
 	}
 }
 
-var snapshotloaded = make(map[currency.Pair]map[string]bool)
-
-// ProcessOrderbook processes orderbook updates
-func (b *Bitmex) processOrderbook(data []OrderBookL2, action string, currencyPair currency.Pair, assetType string) error { // nolint: unparam
-	if len(data) < 1 {
-		return errors.New("bitmex_websocket.go error - no orderbook data")
+func (b *Bitmex) wsHandleData(respRaw []byte) error {
+	quickCapture := make(map[string]interface{})
+	err := json.Unmarshal(respRaw, &quickCapture)
+	if err != nil {
+		return err
 	}
 
-	_, ok := snapshotloaded[currencyPair]
-	if !ok {
-		snapshotloaded[currencyPair] = make(map[string]bool)
+	var respError WebsocketErrorResponse
+	if _, ok := quickCapture["status"]; ok {
+		err = json.Unmarshal(respRaw, &respError)
+		if err != nil {
+			return err
+		}
 	}
 
-	_, ok = snapshotloaded[currencyPair][assetType]
-	if !ok {
-		snapshotloaded[currencyPair][assetType] = false
-	}
-
-	switch action {
-	case bitmexActionInitialData:
-		if !snapshotloaded[currencyPair][assetType] {
-			var newOrderBook orderbook.Base
-			var bids, asks []orderbook.Item
-
-			for _, orderbookItem := range data {
-				if orderbookItem.Side == exchange.SellOrderSide.ToString() {
-					asks = append(asks, orderbook.Item{
-						Price:  orderbookItem.Price,
-						Amount: float64(orderbookItem.Size),
-					})
-					continue
-				}
-				bids = append(bids, orderbook.Item{
-					Price:  orderbookItem.Price,
-					Amount: float64(orderbookItem.Size),
-				})
-			}
-
-			if len(bids) == 0 || len(asks) == 0 {
-				return errors.New("bitmex_websocket.go error - snapshot not initialised correctly")
-			}
-
-			newOrderBook.Asks = asks
-			newOrderBook.Bids = bids
-			newOrderBook.AssetType = assetType
-			newOrderBook.Pair = currencyPair
-
-			err := b.Websocket.Orderbook.LoadSnapshot(&newOrderBook, b.GetName(), false)
-			if err != nil {
-				return fmt.Errorf("bitmex_websocket.go process orderbook error -  %s",
-					err)
-			}
-			snapshotloaded[currencyPair][assetType] = true
-			b.Websocket.DataHandler <- exchange.WebsocketOrderbookUpdate{
-				Pair:     currencyPair,
-				Asset:    assetType,
-				Exchange: b.GetName(),
-			}
+	if _, ok := quickCapture["success"]; ok {
+		var decodedResp WebsocketSubscribeResp
+		err = json.Unmarshal(respRaw, &decodedResp)
+		if err != nil {
+			return err
 		}
 
-	default:
-		if snapshotloaded[currencyPair][assetType] {
-			var asks, bids []orderbook.Item
-			for _, orderbookItem := range data {
-				if orderbookItem.Side == "Sell" {
-					asks = append(asks, orderbook.Item{
-						Price:  orderbookItem.Price,
-						Amount: float64(orderbookItem.Size),
-					})
-					continue
+		if decodedResp.Success {
+			if len(quickCapture) == 3 {
+				if b.Verbose {
+					log.Debugf(log.ExchangeSys, "%s websocket: Successfully subscribed to %s",
+						b.Name, decodedResp.Subscribe)
 				}
-				bids = append(bids, orderbook.Item{
-					Price:  orderbookItem.Price,
-					Amount: float64(orderbookItem.Size),
-				})
+			} else {
+				b.Websocket.SetCanUseAuthenticatedEndpoints(true)
+				if b.Verbose {
+					log.Debugf(log.ExchangeSys, "%s websocket: Successfully authenticated websocket connection",
+						b.Name)
+				}
 			}
+			return nil
+		}
 
-			err := b.Websocket.Orderbook.UpdateUsingID(bids,
-				asks,
-				currencyPair,
-				b.GetName(),
-				assetType,
-				action)
-
+		b.Websocket.DataHandler <- fmt.Errorf("%s websocket error: Unable to subscribe %s",
+			b.Name, decodedResp.Subscribe)
+	} else if _, ok := quickCapture["table"]; ok {
+		var decodedResp WebsocketMainResponse
+		err = json.Unmarshal(respRaw, &decodedResp)
+		if err != nil {
+			return err
+		}
+		switch decodedResp.Table {
+		case bitmexWSOrderbookL2, bitmexWSOrderbookL225, bitmexWSOrderbookL10:
+			var orderbooks OrderBookData
+			err = json.Unmarshal(respRaw, &orderbooks)
+			if err != nil {
+				return err
+			}
+			if len(orderbooks.Data) == 0 {
+				return fmt.Errorf("%s - Empty orderbook data received: %s", b.Name, respRaw)
+			}
+			p := currency.NewPairFromString(orderbooks.Data[0].Symbol)
+			var a asset.Item
+			a, err = b.GetPairAssetType(p)
 			if err != nil {
 				return err
 			}
 
-			b.Websocket.DataHandler <- exchange.WebsocketOrderbookUpdate{
-				Pair:     currencyPair,
-				Asset:    assetType,
-				Exchange: b.GetName(),
+			err = b.processOrderbook(orderbooks.Data,
+				orderbooks.Action,
+				p,
+				a)
+			if err != nil {
+				return err
 			}
+
+		case bitmexWSTrade:
+			var trades TradeData
+			err = json.Unmarshal(respRaw, &trades)
+			if err != nil {
+				return err
+			}
+
+			if trades.Action == bitmexActionInitialData {
+				return nil
+			}
+
+			for i := range trades.Data {
+				var a asset.Item
+				p := currency.NewPairFromString(trades.Data[i].Symbol)
+				a, err = b.GetPairAssetType(p)
+				if err != nil {
+					return err
+				}
+				var oSide order.Side
+				oSide, err = order.StringToOrderSide(trades.Data[i].Side)
+				if err != nil {
+					b.Websocket.DataHandler <- order.ClassificationError{
+						Exchange: b.Name,
+						Err:      err,
+					}
+				}
+
+				b.Websocket.DataHandler <- wshandler.TradeData{
+					Timestamp:    trades.Data[i].Timestamp,
+					Price:        trades.Data[i].Price,
+					Amount:       float64(trades.Data[i].Size),
+					CurrencyPair: p,
+					Exchange:     b.Name,
+					AssetType:    a,
+					Side:         oSide,
+				}
+			}
+
+		case bitmexWSAnnouncement:
+			var announcement AnnouncementData
+			err = json.Unmarshal(respRaw, &announcement)
+			if err != nil {
+				return err
+			}
+
+			if announcement.Action == bitmexActionInitialData {
+				return nil
+			}
+
+			b.Websocket.DataHandler <- announcement.Data
+		case bitmexWSAffiliate:
+			var response WsAffiliateResponse
+			err = json.Unmarshal(respRaw, &response)
+			if err != nil {
+				return err
+			}
+			b.Websocket.DataHandler <- response
+		case bitmexWSInstrument:
+			// ticker
+		case bitmexWSExecution:
+			// trades of an order
+			var response WsExecutionResponse
+			err = json.Unmarshal(respRaw, &response)
+			if err != nil {
+				return err
+			}
+
+			for i := range response.Data {
+				p := currency.NewPairFromString(response.Data[i].Symbol)
+				var a asset.Item
+				a, err = b.GetPairAssetType(p)
+				if err != nil {
+					return err
+				}
+				var oStatus order.Status
+				oStatus, err = order.StringToOrderStatus(response.Data[i].OrdStatus)
+				if err != nil {
+					b.Websocket.DataHandler <- order.ClassificationError{
+						Exchange: b.Name,
+						OrderID:  response.Data[i].OrderID,
+						Err:      err,
+					}
+				}
+				var oSide order.Side
+				oSide, err = order.StringToOrderSide(response.Data[i].Side)
+				if err != nil {
+					b.Websocket.DataHandler <- order.ClassificationError{
+						Exchange: b.Name,
+						OrderID:  response.Data[i].OrderID,
+						Err:      err,
+					}
+				}
+				b.Websocket.DataHandler <- &order.Modify{
+					Exchange:  b.Name,
+					ID:        response.Data[i].OrderID,
+					AccountID: strconv.FormatInt(response.Data[i].Account, 10),
+					AssetType: a,
+					Pair:      p,
+					Status:    oStatus,
+					Trades: []order.TradeHistory{
+						{
+							Price:     response.Data[i].Price,
+							Amount:    response.Data[i].OrderQuantity,
+							Exchange:  b.Name,
+							TID:       response.Data[i].ExecID,
+							Side:      oSide,
+							Timestamp: response.Data[i].Timestamp,
+							IsMaker:   false,
+						},
+					},
+				}
+			}
+		case bitmexWSOrder:
+			var response WsOrderResponse
+			err = json.Unmarshal(respRaw, &response)
+			if err != nil {
+				return err
+			}
+			switch response.Action {
+			case "update", "insert":
+				for x := range response.Data {
+					var p currency.Pair
+					var a asset.Item
+					p, a, err = b.GetRequestFormattedPairAndAssetType(response.Data[x].Symbol)
+					if err != nil {
+						return err
+					}
+					var oSide order.Side
+					oSide, err = order.StringToOrderSide(response.Data[x].Side)
+					if err != nil {
+						b.Websocket.DataHandler <- order.ClassificationError{
+							Exchange: b.Name,
+							OrderID:  response.Data[x].OrderID,
+							Err:      err,
+						}
+					}
+					var oType order.Type
+					oType, err = order.StringToOrderType(response.Data[x].OrderType)
+					if err != nil {
+						b.Websocket.DataHandler <- order.ClassificationError{
+							Exchange: b.Name,
+							OrderID:  response.Data[x].OrderID,
+							Err:      err,
+						}
+					}
+					var oStatus order.Status
+					oStatus, err = order.StringToOrderStatus(response.Data[x].OrderStatus)
+					if err != nil {
+						b.Websocket.DataHandler <- order.ClassificationError{
+							Exchange: b.Name,
+							OrderID:  response.Data[x].OrderID,
+							Err:      err,
+						}
+					}
+					b.Websocket.DataHandler <- &order.Detail{
+						Price:     response.Data[x].Price,
+						Amount:    response.Data[x].OrderQuantity,
+						Exchange:  b.Name,
+						ID:        response.Data[x].OrderID,
+						AccountID: strconv.FormatInt(response.Data[x].Account, 10),
+						Type:      oType,
+						Side:      oSide,
+						Status:    oStatus,
+						AssetType: a,
+						Date:      response.Data[x].TransactTime,
+						Pair:      p,
+					}
+				}
+			case "delete":
+				for x := range response.Data {
+					var p currency.Pair
+					var a asset.Item
+					p, a, err = b.GetRequestFormattedPairAndAssetType(response.Data[x].Symbol)
+					if err != nil {
+						return err
+					}
+					var oSide order.Side
+					oSide, err = order.StringToOrderSide(response.Data[x].Side)
+					if err != nil {
+						b.Websocket.DataHandler <- order.ClassificationError{
+							Exchange: b.Name,
+							OrderID:  response.Data[x].OrderID,
+							Err:      err,
+						}
+					}
+					var oType order.Type
+					oType, err = order.StringToOrderType(response.Data[x].OrderType)
+					if err != nil {
+						b.Websocket.DataHandler <- order.ClassificationError{
+							Exchange: b.Name,
+							OrderID:  response.Data[x].OrderID,
+							Err:      err,
+						}
+					}
+					var oStatus order.Status
+					oStatus, err = order.StringToOrderStatus(response.Data[x].OrderStatus)
+					if err != nil {
+						b.Websocket.DataHandler <- order.ClassificationError{
+							Exchange: b.Name,
+							OrderID:  response.Data[x].OrderID,
+							Err:      err,
+						}
+					}
+					b.Websocket.DataHandler <- &order.Cancel{
+						Price:     response.Data[x].Price,
+						Amount:    response.Data[x].OrderQuantity,
+						Exchange:  b.Name,
+						ID:        response.Data[x].OrderID,
+						AccountID: strconv.FormatInt(response.Data[x].Account, 10),
+						Type:      oType,
+						Side:      oSide,
+						Status:    oStatus,
+						AssetType: a,
+						Date:      response.Data[x].TransactTime,
+						Pair:      p,
+					}
+				}
+			default:
+				b.Websocket.DataHandler <- fmt.Errorf("%s - Unsupported order update %+v", b.Name, response)
+			}
+		case bitmexWSMargin:
+			var response WsMarginResponse
+			err = json.Unmarshal(respRaw, &response)
+			if err != nil {
+				return err
+			}
+			b.Websocket.DataHandler <- response
+		case bitmexWSPosition:
+			var response WsPositionResponse
+			err = json.Unmarshal(respRaw, &response)
+			if err != nil {
+				return err
+			}
+
+		case bitmexWSPrivateNotifications:
+			var response WsPrivateNotificationsResponse
+			err = json.Unmarshal(respRaw, &response)
+			if err != nil {
+				return err
+			}
+			b.Websocket.DataHandler <- response
+		case bitmexWSTransact:
+			var response WsTransactResponse
+			err = json.Unmarshal(respRaw, &response)
+			if err != nil {
+				return err
+			}
+			b.Websocket.DataHandler <- response
+		case bitmexWSWallet:
+			var response WsWalletResponse
+			err = json.Unmarshal(respRaw, &response)
+			if err != nil {
+				return err
+			}
+			b.Websocket.DataHandler <- response
+		default:
+			b.Websocket.DataHandler <- wshandler.UnhandledMessageWarning{Message: b.Name + wshandler.UnhandledMessage + string(respRaw)}
+			return nil
+		}
+	}
+	return nil
+}
+
+// ProcessOrderbook processes orderbook updates
+func (b *Bitmex) processOrderbook(data []OrderBookL2, action string, currencyPair currency.Pair, assetType asset.Item) error {
+	if len(data) < 1 {
+		return errors.New("bitmex_websocket.go error - no orderbook data")
+	}
+
+	switch action {
+	case bitmexActionInitialData:
+		var newOrderBook orderbook.Base
+		for i := range data {
+			if strings.EqualFold(data[i].Side, order.Sell.String()) {
+				newOrderBook.Asks = append(newOrderBook.Asks, orderbook.Item{
+					Price:  data[i].Price,
+					Amount: float64(data[i].Size),
+					ID:     data[i].ID,
+				})
+				continue
+			}
+			newOrderBook.Bids = append(newOrderBook.Bids, orderbook.Item{
+				Price:  data[i].Price,
+				Amount: float64(data[i].Size),
+				ID:     data[i].ID,
+			})
+		}
+		newOrderBook.AssetType = assetType
+		newOrderBook.Pair = currencyPair
+		newOrderBook.ExchangeName = b.Name
+
+		err := b.Websocket.Orderbook.LoadSnapshot(&newOrderBook)
+		if err != nil {
+			return fmt.Errorf("bitmex_websocket.go process orderbook error -  %s",
+				err)
+		}
+		b.Websocket.DataHandler <- wshandler.WebsocketOrderbookUpdate{
+			Pair:     currencyPair,
+			Asset:    assetType,
+			Exchange: b.Name,
+		}
+	default:
+		var asks, bids []orderbook.Item
+		for i := range data {
+			if strings.EqualFold(data[i].Side, "Sell") {
+				asks = append(asks, orderbook.Item{
+					Amount: float64(data[i].Size),
+					ID:     data[i].ID,
+				})
+				continue
+			}
+			bids = append(bids, orderbook.Item{
+				Amount: float64(data[i].Size),
+				ID:     data[i].ID,
+			})
+		}
+
+		err := b.Websocket.Orderbook.Update(&wsorderbook.WebsocketOrderbookUpdate{
+			Bids:   bids,
+			Asks:   asks,
+			Pair:   currencyPair,
+			Asset:  assetType,
+			Action: action,
+		})
+		if err != nil {
+			return err
+		}
+
+		b.Websocket.DataHandler <- wshandler.WebsocketOrderbookUpdate{
+			Pair:     currencyPair,
+			Asset:    assetType,
+			Exchange: b.Name,
 		}
 	}
 	return nil
@@ -451,19 +542,28 @@ func (b *Bitmex) processOrderbook(data []OrderBookL2, action string, currencyPai
 
 // GenerateDefaultSubscriptions Adds default subscriptions to websocket to be handled by ManageSubscriptions()
 func (b *Bitmex) GenerateDefaultSubscriptions() {
-	contracts := b.GetEnabledCurrencies()
+	assets := b.GetAssetTypes()
+	var allPairs currency.Pairs
+
+	for x := range assets {
+		contracts := b.GetEnabledPairs(assets[x])
+		for y := range contracts {
+			allPairs = allPairs.Add(contracts[y])
+		}
+	}
+
 	channels := []string{bitmexWSOrderbookL2, bitmexWSTrade}
-	subscriptions := []exchange.WebsocketChannelSubscription{
+	subscriptions := []wshandler.WebsocketChannelSubscription{
 		{
 			Channel: bitmexWSAnnouncement,
 		},
 	}
 
 	for i := range channels {
-		for j := range contracts {
-			subscriptions = append(subscriptions, exchange.WebsocketChannelSubscription{
-				Channel:  fmt.Sprintf("%v:%v", channels[i], contracts[j].String()),
-				Currency: contracts[j],
+		for j := range allPairs {
+			subscriptions = append(subscriptions, wshandler.WebsocketChannelSubscription{
+				Channel:  channels[i] + ":" + allPairs[j].String(),
+				Currency: allPairs[j],
 			})
 		}
 	}
@@ -475,11 +575,11 @@ func (b *Bitmex) GenerateAuthenticatedSubscriptions() {
 	if !b.Websocket.CanUseAuthenticatedEndpoints() {
 		return
 	}
-	contracts := b.GetEnabledCurrencies()
+	contracts := b.GetEnabledPairs(asset.PerpetualContract)
 	channels := []string{bitmexWSExecution,
 		bitmexWSPosition,
 	}
-	subscriptions := []exchange.WebsocketChannelSubscription{
+	subscriptions := []wshandler.WebsocketChannelSubscription{
 		{
 			Channel: bitmexWSAffiliate,
 		},
@@ -501,8 +601,8 @@ func (b *Bitmex) GenerateAuthenticatedSubscriptions() {
 	}
 	for i := range channels {
 		for j := range contracts {
-			subscriptions = append(subscriptions, exchange.WebsocketChannelSubscription{
-				Channel:  fmt.Sprintf("%v:%v", channels[i], contracts[j].String()),
+			subscriptions = append(subscriptions, wshandler.WebsocketChannelSubscription{
+				Channel:  channels[i] + ":" + contracts[j].String(),
 				Currency: contracts[j],
 			})
 		}
@@ -511,21 +611,21 @@ func (b *Bitmex) GenerateAuthenticatedSubscriptions() {
 }
 
 // Subscribe subscribes to a websocket channel
-func (b *Bitmex) Subscribe(channelToSubscribe exchange.WebsocketChannelSubscription) error {
+func (b *Bitmex) Subscribe(channelToSubscribe wshandler.WebsocketChannelSubscription) error {
 	var subscriber WebsocketRequest
 	subscriber.Command = "subscribe"
 	subscriber.Arguments = append(subscriber.Arguments, channelToSubscribe.Channel)
-	return b.wsSend(subscriber)
+	return b.WebsocketConn.SendJSONMessage(subscriber)
 }
 
 // Unsubscribe sends a websocket message to stop receiving data from the channel
-func (b *Bitmex) Unsubscribe(channelToSubscribe exchange.WebsocketChannelSubscription) error {
+func (b *Bitmex) Unsubscribe(channelToSubscribe wshandler.WebsocketChannelSubscription) error {
 	var subscriber WebsocketRequest
 	subscriber.Command = "unsubscribe"
 	subscriber.Arguments = append(subscriber.Arguments,
 		channelToSubscribe.Params["args"],
 		channelToSubscribe.Channel+":"+channelToSubscribe.Currency.String())
-	return b.wsSend(subscriber)
+	return b.WebsocketConn.SendJSONMessage(subscriber)
 }
 
 // WebsocketSendAuth sends an authenticated subscription
@@ -536,28 +636,19 @@ func (b *Bitmex) websocketSendAuth() error {
 	b.Websocket.SetCanUseAuthenticatedEndpoints(true)
 	timestamp := time.Now().Add(time.Hour * 1).Unix()
 	newTimestamp := strconv.FormatInt(timestamp, 10)
-	hmac := common.GetHMAC(common.HashSHA256,
+	hmac := crypto.GetHMAC(crypto.HashSHA256,
 		[]byte("GET/realtime"+newTimestamp),
-		[]byte(b.APISecret))
-	signature := common.HexEncodeToString(hmac)
+		[]byte(b.API.Credentials.Secret))
+	signature := crypto.HexEncodeToString(hmac)
+
 	var sendAuth WebsocketRequest
 	sendAuth.Command = "authKeyExpires"
-	sendAuth.Arguments = append(sendAuth.Arguments, b.APIKey, timestamp,
+	sendAuth.Arguments = append(sendAuth.Arguments, b.API.Credentials.Key, timestamp,
 		signature)
-	err := b.wsSend(sendAuth)
+	err := b.WebsocketConn.SendJSONMessage(sendAuth)
 	if err != nil {
 		b.Websocket.SetCanUseAuthenticatedEndpoints(false)
 		return err
 	}
 	return nil
-}
-
-// WsSend sends data to the websocket server
-func (b *Bitmex) wsSend(data interface{}) error {
-	b.wsRequestMtx.Lock()
-	defer b.wsRequestMtx.Unlock()
-	if b.Verbose {
-		log.Debugf("%v sending message to websocket %v", b.Name, data)
-	}
-	return b.WebsocketConn.WriteJSON(data)
 }

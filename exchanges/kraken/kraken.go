@@ -1,6 +1,7 @@
 package kraken
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,14 +11,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
-	"github.com/thrasher-/gocryptotrader/common"
-	"github.com/thrasher-/gocryptotrader/config"
-	"github.com/thrasher-/gocryptotrader/currency"
-	exchange "github.com/thrasher-/gocryptotrader/exchanges"
-	"github.com/thrasher-/gocryptotrader/exchanges/request"
-	"github.com/thrasher-/gocryptotrader/exchanges/ticker"
-	log "github.com/thrasher-/gocryptotrader/logger"
+	"github.com/thrasher-corp/gocryptotrader/common/crypto"
+	"github.com/thrasher-corp/gocryptotrader/currency"
+	exchange "github.com/thrasher-corp/gocryptotrader/exchanges"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/order"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/request"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/websocket/wshandler"
+	"github.com/thrasher-corp/gocryptotrader/log"
 )
 
 const (
@@ -50,110 +50,26 @@ const (
 	krakenDepositAddresses = "DepositAddresses"
 	krakenWithdrawStatus   = "WithdrawStatus"
 	krakenWithdrawCancel   = "WithdrawCancel"
+	krakenWebsocketToken   = "GetWebSocketsToken"
 
-	krakenAuthRate   = 0
-	krakenUnauthRate = 0
+	// Rate limit consts
+	krakenRateInterval = time.Second
+	krakenRequestRate  = 1
 )
+
+var assetPairMap map[string]string
 
 // Kraken is the overarching type across the alphapoint package
 type Kraken struct {
 	exchange.Base
-	WebsocketConn      *websocket.Conn
-	CryptoFee, FiatFee float64
-	wsRequestMtx       sync.Mutex
-}
-
-// SetDefaults sets current default settings
-func (k *Kraken) SetDefaults() {
-	k.Name = "Kraken"
-	k.Enabled = false
-	k.FiatFee = 0.35
-	k.CryptoFee = 0.10
-	k.Verbose = false
-	k.RESTPollingDelay = 10
-	k.APIWithdrawPermissions = exchange.AutoWithdrawCryptoWithSetup |
-		exchange.WithdrawCryptoWith2FA |
-		exchange.AutoWithdrawFiatWithSetup |
-		exchange.WithdrawFiatWith2FA
-	k.RequestCurrencyPairFormat.Delimiter = ""
-	k.RequestCurrencyPairFormat.Uppercase = true
-	k.RequestCurrencyPairFormat.Separator = ","
-	k.ConfigCurrencyPairFormat.Delimiter = "-"
-	k.ConfigCurrencyPairFormat.Uppercase = true
-	k.AssetTypes = []string{ticker.Spot}
-	k.SupportsAutoPairUpdating = true
-	k.SupportsRESTTickerBatching = true
-	k.Requester = request.New(k.Name,
-		request.NewRateLimit(time.Second, krakenAuthRate),
-		request.NewRateLimit(time.Second, krakenUnauthRate),
-		common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
-	k.APIUrlDefault = krakenAPIURL
-	k.APIUrl = k.APIUrlDefault
-	k.WebsocketInit()
-	k.WebsocketURL = krakenWSURL
-	k.Websocket.Functionality = exchange.WebsocketTickerSupported |
-		exchange.WebsocketTradeDataSupported |
-		exchange.WebsocketKlineSupported |
-		exchange.WebsocketOrderbookSupported |
-		exchange.WebsocketSubscribeSupported |
-		exchange.WebsocketUnsubscribeSupported
-
-}
-
-// Setup sets current exchange configuration
-func (k *Kraken) Setup(exch *config.ExchangeConfig) {
-	if !exch.Enabled {
-		k.SetEnabled(false)
-	} else {
-		k.Enabled = true
-		k.AuthenticatedAPISupport = exch.AuthenticatedAPISupport
-		k.SetAPIKeys(exch.APIKey, exch.APISecret, "", false)
-		k.SetHTTPClientTimeout(exch.HTTPTimeout)
-		k.SetHTTPClientUserAgent(exch.HTTPUserAgent)
-		k.RESTPollingDelay = exch.RESTPollingDelay
-		k.Verbose = exch.Verbose
-		k.HTTPDebugging = exch.HTTPDebugging
-		k.Websocket.SetWsStatusAndConnection(exch.Websocket)
-		k.BaseCurrencies = exch.BaseCurrencies
-		k.AvailablePairs = exch.AvailablePairs
-		k.EnabledPairs = exch.EnabledPairs
-		err := k.SetCurrencyPairFormat()
-		if err != nil {
-			log.Fatal(err)
-		}
-		err = k.SetAssetTypes()
-		if err != nil {
-			log.Fatal(err)
-		}
-		err = k.SetAutoPairDefaults()
-		if err != nil {
-			log.Fatal(err)
-		}
-		err = k.SetAPIURL(exch)
-		if err != nil {
-			log.Fatal(err)
-		}
-		err = k.SetClientProxyAddress(exch.ProxyAddress)
-		if err != nil {
-			log.Fatal(err)
-		}
-		err = k.WebsocketSetup(k.WsConnect,
-			k.Subscribe,
-			k.Unsubscribe,
-			exch.Name,
-			exch.Websocket,
-			exch.Verbose,
-			krakenWSURL,
-			exch.WebsocketURL)
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
+	WebsocketConn              *wshandler.WebsocketConnection
+	AuthenticatedWebsocketConn *wshandler.WebsocketConnection
+	wsRequestMtx               sync.Mutex
 }
 
 // GetServerTime returns current server time
 func (k *Kraken) GetServerTime() (TimeResponse, error) {
-	path := fmt.Sprintf("%s/%s/public/%s", k.APIUrl, krakenAPIVersion, krakenServerTime)
+	path := fmt.Sprintf("%s/%s/public/%s", k.API.Endpoints.URL, krakenAPIVersion, krakenServerTime)
 
 	var response struct {
 		Error  []string     `json:"error"`
@@ -169,7 +85,7 @@ func (k *Kraken) GetServerTime() (TimeResponse, error) {
 
 // GetAssets returns a full asset list
 func (k *Kraken) GetAssets() (map[string]Asset, error) {
-	path := fmt.Sprintf("%s/%s/public/%s", k.APIUrl, krakenAPIVersion, krakenAssets)
+	path := fmt.Sprintf("%s/%s/public/%s", k.API.Endpoints.URL, krakenAPIVersion, krakenAssets)
 
 	var response struct {
 		Error  []string         `json:"error"`
@@ -185,7 +101,7 @@ func (k *Kraken) GetAssets() (map[string]Asset, error) {
 
 // GetAssetPairs returns a full asset pair list
 func (k *Kraken) GetAssetPairs() (map[string]AssetPairs, error) {
-	path := fmt.Sprintf("%s/%s/public/%s", k.APIUrl, krakenAPIVersion, krakenAssetPairs)
+	path := fmt.Sprintf("%s/%s/public/%s", k.API.Endpoints.URL, krakenAPIVersion, krakenAssetPairs)
 
 	var response struct {
 		Error  []string              `json:"error"`
@@ -194,6 +110,12 @@ func (k *Kraken) GetAssetPairs() (map[string]AssetPairs, error) {
 
 	if err := k.SendHTTPRequest(path, &response); err != nil {
 		return response.Result, err
+	}
+	for i := range response.Result {
+		if assetPairMap == nil {
+			assetPairMap = make(map[string]string)
+		}
+		assetPairMap[i] = response.Result[i].Altname
 	}
 
 	return response.Result, GetError(response.Error)
@@ -211,7 +133,7 @@ func (k *Kraken) GetTicker(symbol string) (Ticker, error) {
 	}
 
 	resp := Response{}
-	path := fmt.Sprintf("%s/%s/public/%s?%s", k.APIUrl, krakenAPIVersion, krakenTicker, values.Encode())
+	path := fmt.Sprintf("%s/%s/public/%s?%s", k.API.Endpoints.URL, krakenAPIVersion, krakenTicker, values.Encode())
 
 	err := k.SendHTTPRequest(path, &resp)
 	if err != nil {
@@ -227,7 +149,7 @@ func (k *Kraken) GetTicker(symbol string) (Ticker, error) {
 		tick.Bid, _ = strconv.ParseFloat(resp.Data[i].Bid[0], 64)
 		tick.Last, _ = strconv.ParseFloat(resp.Data[i].Last[0], 64)
 		tick.Volume, _ = strconv.ParseFloat(resp.Data[i].Volume[1], 64)
-		tick.VWAP, _ = strconv.ParseFloat(resp.Data[i].VWAP[1], 64)
+		tick.VolumeWeightedAveragePrice, _ = strconv.ParseFloat(resp.Data[i].VolumeWeightedAveragePrice[1], 64)
 		tick.Trades = resp.Data[i].Trades[1]
 		tick.Low, _ = strconv.ParseFloat(resp.Data[i].Low[1], 64)
 		tick.High, _ = strconv.ParseFloat(resp.Data[i].High[1], 64)
@@ -239,7 +161,7 @@ func (k *Kraken) GetTicker(symbol string) (Ticker, error) {
 // GetTickers supports fetching multiple tickers from Kraken
 // pairList must be in the format pairs separated by commas
 // ("LTCUSD,ETCUSD")
-func (k *Kraken) GetTickers(pairList string) (Tickers, error) {
+func (k *Kraken) GetTickers(pairList string) (map[string]Ticker, error) {
 	values := url.Values{}
 	values.Set("pair", pairList)
 
@@ -249,7 +171,7 @@ func (k *Kraken) GetTickers(pairList string) (Tickers, error) {
 	}
 
 	resp := Response{}
-	path := fmt.Sprintf("%s/%s/public/%s?%s", krakenAPIURL, krakenAPIVersion, krakenTicker, values.Encode())
+	path := fmt.Sprintf("%s/%s/public/%s?%s", k.API.Endpoints.URL, krakenAPIVersion, krakenTicker, values.Encode())
 
 	err := k.SendHTTPRequest(path, &resp)
 	if err != nil {
@@ -260,7 +182,7 @@ func (k *Kraken) GetTickers(pairList string) (Tickers, error) {
 		return nil, fmt.Errorf("%s error: %s", k.Name, resp.Error)
 	}
 
-	tickers := make(Tickers)
+	tickers := make(map[string]Ticker)
 
 	for i := range resp.Data {
 		tick := Ticker{}
@@ -268,7 +190,7 @@ func (k *Kraken) GetTickers(pairList string) (Tickers, error) {
 		tick.Bid, _ = strconv.ParseFloat(resp.Data[i].Bid[0], 64)
 		tick.Last, _ = strconv.ParseFloat(resp.Data[i].Last[0], 64)
 		tick.Volume, _ = strconv.ParseFloat(resp.Data[i].Volume[1], 64)
-		tick.VWAP, _ = strconv.ParseFloat(resp.Data[i].VWAP[1], 64)
+		tick.VolumeWeightedAveragePrice, _ = strconv.ParseFloat(resp.Data[i].VolumeWeightedAveragePrice[1], 64)
 		tick.Trades = resp.Data[i].Trades[1]
 		tick.Low, _ = strconv.ParseFloat(resp.Data[i].Low[1], 64)
 		tick.High, _ = strconv.ParseFloat(resp.Data[i].High[1], 64)
@@ -291,7 +213,7 @@ func (k *Kraken) GetOHLC(symbol string) ([]OpenHighLowClose, error) {
 	var OHLC []OpenHighLowClose
 	var result Response
 
-	path := fmt.Sprintf("%s/%s/public/%s?%s", k.APIUrl, krakenAPIVersion, krakenOHLC, values.Encode())
+	path := fmt.Sprintf("%s/%s/public/%s?%s", k.API.Endpoints.URL, krakenAPIVersion, krakenOHLC, values.Encode())
 
 	err := k.SendHTTPRequest(path, &result)
 	if err != nil {
@@ -317,7 +239,7 @@ func (k *Kraken) GetOHLC(symbol string) ([]OpenHighLowClose, error) {
 			case 4:
 				o.Close, _ = strconv.ParseFloat(x.(string), 64)
 			case 5:
-				o.Vwap, _ = strconv.ParseFloat(x.(string), 64)
+				o.VolumeWeightedAveragePrice, _ = strconv.ParseFloat(x.(string), 64)
 			case 6:
 				o.Volume, _ = strconv.ParseFloat(x.(string), 64)
 			case 7:
@@ -337,14 +259,21 @@ func (k *Kraken) GetDepth(symbol string) (Orderbook, error) {
 	var result interface{}
 	var orderBook Orderbook
 
-	path := fmt.Sprintf("%s/%s/public/%s?%s", k.APIUrl, krakenAPIVersion, krakenDepth, values.Encode())
+	path := fmt.Sprintf("%s/%s/public/%s?%s", k.API.Endpoints.URL, krakenAPIVersion, krakenDepth, values.Encode())
 
 	err := k.SendHTTPRequest(path, &result)
 	if err != nil {
 		return orderBook, err
 	}
 
+	if result == nil {
+		return orderBook, fmt.Errorf("%s GetDepth result is nil", k.Name)
+	}
+
 	data := result.(map[string]interface{})
+	if data["result"] == nil {
+		return orderBook, fmt.Errorf("%s GetDepth data[result] is nil", k.Name)
+	}
 	orderbookData := data["result"].(map[string]interface{})
 
 	var bidsData []interface{}
@@ -392,7 +321,7 @@ func (k *Kraken) GetTrades(symbol string) ([]RecentTrades, error) {
 	var recentTrades []RecentTrades
 	var result interface{}
 
-	path := fmt.Sprintf("%s/%s/public/%s?%s", k.APIUrl, krakenAPIVersion, krakenTrades, values.Encode())
+	path := fmt.Sprintf("%s/%s/public/%s?%s", k.API.Endpoints.URL, krakenAPIVersion, krakenTrades, values.Encode())
 
 	err := k.SendHTTPRequest(path, &result)
 	if err != nil {
@@ -433,7 +362,7 @@ func (k *Kraken) GetSpread(symbol string) ([]Spread, error) {
 	var peanutButter []Spread
 	var response interface{}
 
-	path := fmt.Sprintf("%s/%s/public/%s?%s", k.APIUrl, krakenAPIVersion, krakenSpread, values.Encode())
+	path := fmt.Sprintf("%s/%s/public/%s?%s", k.API.Endpoints.URL, krakenAPIVersion, krakenSpread, values.Encode())
 
 	err := k.SendHTTPRequest(path, &response)
 	if err != nil {
@@ -547,7 +476,6 @@ func (k *Kraken) GetTradeBalance(args ...TradeBalanceOptions) (TradeBalanceInfo,
 		if len(args[0].Asset) > 0 {
 			params.Set("asset", args[0].Asset)
 		}
-
 	}
 
 	var response struct {
@@ -836,12 +764,12 @@ func (k *Kraken) GetTradeVolume(feeinfo bool, symbol ...string) (TradeVolumeResp
 func (k *Kraken) AddOrder(symbol, side, orderType string, volume, price, price2, leverage float64, args *AddOrderOptions) (AddOrderResponse, error) {
 	params := url.Values{
 		"pair":      {symbol},
-		"type":      {common.StringToLower(side)},
-		"ordertype": {common.StringToLower(orderType)},
+		"type":      {strings.ToLower(side)},
+		"ordertype": {strings.ToLower(orderType)},
 		"volume":    {strconv.FormatFloat(volume, 'f', -1, 64)},
 	}
 
-	if orderType == "limit" || price > 0 {
+	if orderType == order.Limit.Lower() || price > 0 {
 		params.Set("price", strconv.FormatFloat(price, 'f', -1, 64))
 	}
 
@@ -853,15 +781,15 @@ func (k *Kraken) AddOrder(symbol, side, orderType string, volume, price, price2,
 		params.Set("leverage", strconv.FormatFloat(leverage, 'f', -1, 64))
 	}
 
-	if args.Oflags == "" {
-		params.Set("oflags", args.Oflags)
+	if args.OrderFlags != "" {
+		params.Set("oflags", args.OrderFlags)
 	}
 
-	if args.StartTm == "" {
+	if args.StartTm != "" {
 		params.Set("starttm", args.StartTm)
 	}
 
-	if args.ExpireTm == "" {
+	if args.ExpireTm != "" {
 		params.Set("expiretm", args.ExpireTm)
 	}
 
@@ -921,7 +849,7 @@ func GetError(apiErrors []string) error {
 	for _, e := range apiErrors {
 		switch e[0] {
 		case 'W':
-			log.Warnf("%s API warning: %v\n", exchangeName, e[1:])
+			log.Warnf(log.ExchangeSys, "%s API warning: %v\n", exchangeName, e[1:])
 		default:
 			return fmt.Errorf("%s API error: %v", exchangeName, e[1:])
 		}
@@ -932,51 +860,54 @@ func GetError(apiErrors []string) error {
 
 // SendHTTPRequest sends an unauthenticated HTTP requests
 func (k *Kraken) SendHTTPRequest(path string, result interface{}) error {
-	return k.SendPayload(http.MethodGet, path, nil, nil, result, false, false, k.Verbose, k.HTTPDebugging)
+	return k.SendPayload(context.Background(), &request.Item{
+		Method:        http.MethodGet,
+		Path:          path,
+		Result:        result,
+		Verbose:       k.Verbose,
+		HTTPDebugging: k.HTTPDebugging,
+		HTTPRecording: k.HTTPRecording,
+	})
 }
 
 // SendAuthenticatedHTTPRequest sends an authenticated HTTP request
 func (k *Kraken) SendAuthenticatedHTTPRequest(method string, params url.Values, result interface{}) (err error) {
-	if !k.AuthenticatedAPISupport {
+	if !k.AllowAuthenticatedRequest() {
 		return fmt.Errorf(exchange.WarningAuthenticatedRequestWithoutCredentialsSet,
 			k.Name)
 	}
 
 	path := fmt.Sprintf("/%s/private/%s", krakenAPIVersion, method)
 
-	n := k.Requester.GetNonce(true).String()
-	params.Set("nonce", n)
-
-	secret, err := common.Base64Decode(k.APISecret)
-	if err != nil {
-		return err
-	}
-
+	params.Set("nonce", k.Requester.GetNonce(true).String())
 	encoded := params.Encode()
-	shasum := common.GetSHA256([]byte(params.Get("nonce") + encoded))
-	signature := common.Base64Encode(common.GetHMAC(common.HashSHA512,
-		append([]byte(path), shasum...), secret))
+	shasum := crypto.GetSHA256([]byte(params.Get("nonce") + encoded))
+	signature := crypto.Base64Encode(crypto.GetHMAC(crypto.HashSHA512,
+		append([]byte(path), shasum...), []byte(k.API.Credentials.Secret)))
 
 	if k.Verbose {
-		log.Debugf("Sending POST request to %s, path: %s, params: %s",
-			k.APIUrl,
+		log.Debugf(log.ExchangeSys, "Sending POST request to %s, path: %s, params: %s",
+			k.API.Endpoints.URL,
 			path,
 			encoded)
 	}
 
 	headers := make(map[string]string)
-	headers["API-Key"] = k.APIKey
+	headers["API-Key"] = k.API.Credentials.Key
 	headers["API-Sign"] = signature
 
-	return k.SendPayload(http.MethodPost,
-		k.APIUrl+path,
-		headers,
-		strings.NewReader(encoded),
-		result,
-		true,
-		true,
-		k.Verbose,
-		k.HTTPDebugging)
+	return k.SendPayload(context.Background(), &request.Item{
+		Method:        http.MethodPost,
+		Path:          k.API.Endpoints.URL + path,
+		Headers:       headers,
+		Body:          strings.NewReader(encoded),
+		Result:        result,
+		AuthRequest:   true,
+		NonceEnabled:  true,
+		Verbose:       k.Verbose,
+		HTTPDebugging: k.HTTPDebugging,
+		HTTPRecording: k.HTTPRecording,
+	})
 }
 
 // GetFee returns an estimate of fee based on type of transaction
@@ -1110,4 +1041,16 @@ func (k *Kraken) WithdrawCancel(c currency.Code, refID string) (bool, error) {
 	}
 
 	return response.Result, GetError(response.Error)
+}
+
+// GetWebsocketToken returns a websocket token
+func (k *Kraken) GetWebsocketToken() (string, error) {
+	var response WsTokenResponse
+	if err := k.SendAuthenticatedHTTPRequest(krakenWebsocketToken, url.Values{}, &response); err != nil {
+		return "", err
+	}
+	if len(response.Error) > 0 {
+		return "", fmt.Errorf("%s - %v", k.Name, response.Error)
+	}
+	return response.Result.Token, nil
 }

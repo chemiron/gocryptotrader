@@ -1,7 +1,5 @@
 package huobi
 
-import "github.com/thrasher-/gocryptotrader/currency"
-
 // Response stores the Huobi response information
 type Response struct {
 	Status       string `json:"status"`
@@ -9,6 +7,12 @@ type Response struct {
 	Timestamp    int64  `json:"ts"`
 	ErrorCode    string `json:"err-code"`
 	ErrorMessage string `json:"err-msg"`
+}
+
+// ResponseV2 stores the Huobi generic response info
+type ResponseV2 struct {
+	Code    int32  `json:"code"`
+	Message string `json:"message"`
 }
 
 // KlineItem stores a kline item
@@ -19,7 +23,7 @@ type KlineItem struct {
 	Low    float64 `json:"low"`
 	High   float64 `json:"high"`
 	Amount float64 `json:"amount"`
-	Vol    float64 `json:"vol"`
+	Volume float64 `json:"vol"`
 	Count  int     `json:"count"`
 }
 
@@ -37,9 +41,26 @@ type CancelOpenOrdersBatch struct {
 // DetailMerged stores the ticker detail merged data
 type DetailMerged struct {
 	Detail
-	Version int       `json:"version"`
+	Version int64     `json:"version"`
 	Ask     []float64 `json:"ask"`
 	Bid     []float64 `json:"bid"`
+}
+
+// Tickers contain all tickers
+type Tickers struct {
+	Data []Ticker `json:"data"`
+}
+
+// Ticker latest ticker data
+type Ticker struct {
+	Amount float64 `json:"amount"`
+	Close  float64 `json:"close"`
+	Count  int64   `json:"count"`
+	High   float64 `json:"high"`
+	Low    float64 `json:"low"`
+	Open   float64 `json:"open"`
+	Symbol string  `json:"symbol"`
+	Volume float64 `json:"vol"`
 }
 
 // OrderBookDataRequestParamsType var for request param types
@@ -93,7 +114,7 @@ type Detail struct {
 	Close     float64 `json:"close"`
 	High      float64 `json:"high"`
 	Timestamp int64   `json:"timestamp"`
-	ID        int     `json:"id"`
+	ID        int64   `json:"id"`
 	Count     int     `json:"count"`
 	Low       float64 `json:"low"`
 	Volume    float64 `json:"vol"`
@@ -101,11 +122,17 @@ type Detail struct {
 
 // Symbol stores the symbol data
 type Symbol struct {
-	BaseCurrency    string `json:"base-currency"`
-	QuoteCurrency   string `json:"quote-currency"`
-	PricePrecision  int    `json:"price-precision"`
-	AmountPrecision int    `json:"amount-precision"`
-	SymbolPartition string `json:"symbol-partition"`
+	BaseCurrency       string  `json:"base-currency"`
+	QuoteCurrency      string  `json:"quote-currency"`
+	PricePrecision     int     `json:"price-precision"`
+	AmountPrecision    int     `json:"amount-precision"`
+	SymbolPartition    string  `json:"symbol-partition"`
+	Innovation         string  `json:"innovation"`
+	State              string  `json:"state"`
+	ValuePrecision     int     `json:"value-precision"`
+	MinimumOrderAmount float64 `json:"min-order-amt"`
+	MaximumOrderAmount float64 `json:"max-order-amt"`
+	MinimumOrderValue  float64 `json:"min-order-value"`
 }
 
 // Account stores the account data
@@ -131,6 +158,12 @@ type AccountBalanceDetail struct {
 	Balance  float64 `json:"balance,string"`
 }
 
+// AggregatedBalance stores balances of all the sub-account
+type AggregatedBalance struct {
+	Currency string  `json:"currency"`
+	Balance  float64 `json:"balance,string"`
+}
+
 // CancelOrderBatch stores the cancel order batch data
 type CancelOrderBatch struct {
 	Success []string `json:"success"`
@@ -143,24 +176,23 @@ type CancelOrderBatch struct {
 
 // OrderInfo stores the order info
 type OrderInfo struct {
-	ID               int     `json:"id"`
+	ID               int64   `json:"id"`
 	Symbol           string  `json:"symbol"`
-	AccountID        float64 `json:"account-id"`
+	AccountID        int64   `json:"account-id"`
 	Amount           float64 `json:"amount,string"`
 	Price            float64 `json:"price,string"`
 	CreatedAt        int64   `json:"created-at"`
 	Type             string  `json:"type"`
 	FieldAmount      float64 `json:"field-amount,string"`
 	FieldCashAmount  float64 `json:"field-cash-amount,string"`
-	Fieldees         float64 `json:"field-fees,string"`
 	FilledAmount     float64 `json:"filled-amount,string"`
 	FilledCashAmount float64 `json:"filled-cash-amount,string"`
 	FilledFees       float64 `json:"filled-fees,string"`
 	FinishedAt       int64   `json:"finished-at"`
-	UserID           int     `json:"user-id"`
+	UserID           int64   `json:"user-id"`
 	Source           string  `json:"source"`
 	State            string  `json:"state"`
-	CanceledAt       int     `json:"canceled-at"`
+	CanceledAt       int64   `json:"canceled-at"`
 	Exchange         string  `json:"exchange"`
 	Batch            string  `json:"batch"`
 }
@@ -220,6 +252,32 @@ type SpotNewOrderRequestParams struct {
 	Type      SpotNewOrderRequestParamsType `json:"type"`              // 订单类型, buy-market: 市价买, sell-market: 市价卖, buy-limit: 限价买, sell-limit: 限价卖
 }
 
+// DepositAddress stores the users deposit address info
+type DepositAddress struct {
+	Currency   string `json:"currency"`
+	Address    string `json:"address"`
+	AddressTag string `json:"addressTag"`
+	Chain      string `json:"chain"`
+}
+
+// ChainQuota stores the users currency chain quota
+type ChainQuota struct {
+	Chain                         string  `json:"chain"`
+	MaxWithdrawAmount             float64 `json:"maxWithdrawAmt,string"`
+	WithdrawQuotaPerDay           float64 `json:"withdrawQuotaPerDay,string"`
+	RemainingWithdrawQuotaPerDay  float64 `json:"remainWithdrawQuotaPerDay,string"`
+	WithdrawQuotaPerYear          float64 `json:"withdrawQuotaPerYear,string"`
+	RemainingWithdrawQuotaPerYear float64 `json:"remainWithdrawQuotaPerYear,string"`
+	WithdrawQuotaTotal            float64 `json:"withdrawQuotaTotal,string"`
+	RemainingWithdrawQuotaTotal   float64 `json:"remainWithdrawQuotaTotal,string"`
+}
+
+// WithdrawQuota stores the users withdraw quotas
+type WithdrawQuota struct {
+	Currency string       `json:"currency"`
+	Chains   []ChainQuota `json:"chains"`
+}
+
 // SpotNewOrderRequestParamsType order type
 type SpotNewOrderRequestParamsType string
 
@@ -264,22 +322,27 @@ var (
 
 // WsRequest defines a request data structure
 type WsRequest struct {
-	Topic             string `json:"req,omitempty"`
-	Subscribe         string `json:"sub,omitempty"`
-	Unsubscribe       string `json:"unsub,omitempty"`
-	ClientGeneratedID string `json:"id,omitempty"`
+	Topic       string `json:"req,omitempty"`
+	Subscribe   string `json:"sub,omitempty"`
+	Unsubscribe string `json:"unsub,omitempty"`
+	ClientID    int64  `json:"cid,string,omitempty"`
 }
 
 // WsResponse defines a response from the websocket connection when there
 // is an error
 type WsResponse struct {
-	TS           int64       `json:"ts"`
-	Status       string      `json:"status"`
-	ErrorCode    interface{} `json:"err-code"`
-	ErrorMessage string      `json:"err-msg"`
-	Ping         int64       `json:"ping"`
-	Channel      string      `json:"ch"`
-	Subscribed   string      `json:"subbed"`
+	Op           string `json:"op"`
+	TS           int64  `json:"ts"`
+	Status       string `json:"status"`
+	ErrorCode    int64  `json:"err-code"`
+	ErrorMessage string `json:"err-msg"`
+	Ping         int64  `json:"ping"`
+	Channel      string `json:"ch"`
+	Rep          string `json:"rep"`
+	Topic        string `json:"topic"`
+	Subscribed   string `json:"subbed"`
+	UnSubscribed string `json:"unsubbed"`
+	ClientID     int64  `json:"cid,string"`
 }
 
 // WsHeartBeat defines a heartbeat request
@@ -292,10 +355,10 @@ type WsDepth struct {
 	Channel   string `json:"ch"`
 	Timestamp int64  `json:"ts"`
 	Tick      struct {
-		Bids      []interface{} `json:"bids"`
-		Asks      []interface{} `json:"asks"`
-		Timestamp int64         `json:"ts"`
-		Version   int64         `json:"version"`
+		Bids      [][]interface{} `json:"bids"`
+		Asks      [][]interface{} `json:"asks"`
+		Timestamp int64           `json:"ts"`
+		Version   int64           `json:"version"`
 	} `json:"tick"`
 }
 
@@ -313,6 +376,24 @@ type WsKline struct {
 		Volume float64 `json:"vol"`
 		Count  int64   `json:"count"`
 	}
+}
+
+// WsTick stores websocket ticker data
+type WsTick struct {
+	Channel   string `json:"ch"`
+	Rep       string `json:"rep"`
+	Timestamp int64  `json:"ts"`
+	Tick      struct {
+		Amount    float64 `json:"amount"`
+		Close     float64 `json:"close"`
+		Count     float64 `json:"count"`
+		High      float64 `json:"high"`
+		ID        float64 `json:"id"`
+		Low       float64 `json:"low"`
+		Open      float64 `json:"open"`
+		Timestamp float64 `json:"ts"`
+		Volume    float64 `json:"vol"`
+	} `json:"tick"`
 }
 
 // WsTrade defines market trade websocket response
@@ -340,6 +421,7 @@ type WsAuthenticationRequest struct {
 	SignatureVersion string `json:"SignatureVersion"`
 	Timestamp        string `json:"Timestamp"`
 	Signature        string `json:"Signature"`
+	ClientID         int64  `json:"cid,string,omitempty"`
 }
 
 // WsMessage defines read data from the websocket connection
@@ -357,18 +439,20 @@ type WsAuthenticatedSubscriptionRequest struct {
 	Timestamp        string `json:"Timestamp"`
 	Signature        string `json:"Signature"`
 	Topic            string `json:"topic"`
+	ClientID         int64  `json:"cid,string,omitempty"`
 }
 
 // WsAuthenticatedAccountsListRequest request for account list authenticated connection
 type WsAuthenticatedAccountsListRequest struct {
-	Op               string        `json:"op"`
-	AccessKeyID      string        `json:"AccessKeyId"`
-	SignatureMethod  string        `json:"SignatureMethod"`
-	SignatureVersion string        `json:"SignatureVersion"`
-	Timestamp        string        `json:"Timestamp"`
-	Signature        string        `json:"Signature"`
-	Topic            string        `json:"topic"`
-	Symbol           currency.Pair `json:"symbol"`
+	Op               string `json:"op"`
+	AccessKeyID      string `json:"AccessKeyId"`
+	SignatureMethod  string `json:"SignatureMethod"`
+	SignatureVersion string `json:"SignatureVersion"`
+	Timestamp        string `json:"Timestamp"`
+	Signature        string `json:"Signature"`
+	Topic            string `json:"topic"`
+	Symbol           string `json:"symbol"`
+	ClientID         int64  `json:"cid,string,omitempty"`
 }
 
 // WsAuthenticatedOrderDetailsRequest request for order details authenticated connection
@@ -381,36 +465,27 @@ type WsAuthenticatedOrderDetailsRequest struct {
 	Signature        string `json:"Signature"`
 	Topic            string `json:"topic"`
 	OrderID          string `json:"order-id"`
+	ClientID         int64  `json:"cid,string,omitempty"`
 }
 
 // WsAuthenticatedOrdersListRequest request for orderslist authenticated connection
 type WsAuthenticatedOrdersListRequest struct {
-	Op               string        `json:"op"`
-	AccessKeyID      string        `json:"AccessKeyId"`
-	SignatureMethod  string        `json:"SignatureMethod"`
-	SignatureVersion string        `json:"SignatureVersion"`
-	Timestamp        string        `json:"Timestamp"`
-	Signature        string        `json:"Signature"`
-	Topic            string        `json:"topic"`
-	States           string        `json:"states"`
-	AccountID        int64         `json:"account-id"`
-	Symbol           currency.Pair `json:"symbol"`
-}
-
-// WsAuthenticatedDataResponse response from authenticated connection
-type WsAuthenticatedDataResponse struct {
-	Op           string `json:"op,omitempty"`
-	Ts           int64  `json:"ts,omitempty"`
-	Topic        string `json:"topic,omitempty"`
-	ErrorCode    int64  `json:"err-code,omitempty"`
-	ErrorMessage string `json:"err-msg,omitempty"`
-	Ping         int64  `json:"ping,omitempty"`
-	CID          string `json:"cid,omitempty"`
+	Op               string `json:"op"`
+	AccessKeyID      string `json:"AccessKeyId"`
+	SignatureMethod  string `json:"SignatureMethod"`
+	SignatureVersion string `json:"SignatureVersion"`
+	Timestamp        string `json:"Timestamp"`
+	Signature        string `json:"Signature"`
+	Topic            string `json:"topic"`
+	States           string `json:"states"`
+	AccountID        int64  `json:"account-id"`
+	Symbol           string `json:"symbol"`
+	ClientID         int64  `json:"cid,string,omitempty"`
 }
 
 // WsAuthenticatedAccountsResponse response from Accounts authenticated subscription
 type WsAuthenticatedAccountsResponse struct {
-	WsAuthenticatedDataResponse
+	WsResponse
 	Data WsAuthenticatedAccountsResponseData `json:"data"`
 }
 
@@ -430,52 +505,59 @@ type WsAuthenticatedAccountsResponseDataList struct {
 
 // WsAuthenticatedOrdersUpdateResponse response from OrdersUpdate authenticated subscription
 type WsAuthenticatedOrdersUpdateResponse struct {
-	WsAuthenticatedDataResponse
+	WsResponse
 	Data WsAuthenticatedOrdersUpdateResponseData `json:"data"`
 }
 
-// WsAuthenticatedOrdersUpdateResponseData order  updatedata
+// WsAuthenticatedOrdersUpdateResponseData order  update data
 type WsAuthenticatedOrdersUpdateResponseData struct {
-	UnfilledAmount   float64       `json:"unfilled-amount,string"`
-	FilledAmount     float64       `json:"filled-amount,string"`
-	Price            float64       `json:"price,string"`
-	OrderID          int64         `json:"order-id"`
-	Symbol           currency.Pair `json:"symbol"`
-	MatchID          int64         `json:"match-id"`
-	FilledCashAmount float64       `json:"filled-cash-amount,string"`
-	Role             string        `json:"role"`
-	OrderState       string        `json:"order-state"`
+	UnfilledAmount   float64 `json:"unfilled-amount,string"`
+	FilledAmount     float64 `json:"filled-amount,string"`
+	Price            float64 `json:"price,string"`
+	OrderID          int64   `json:"order-id"`
+	Symbol           string  `json:"symbol"`
+	MatchID          int64   `json:"match-id"`
+	FilledCashAmount float64 `json:"filled-cash-amount,string"`
+	Role             string  `json:"role"`
+	OrderState       string  `json:"order-state"`
+	OrderType        string  `json:"order-type"`
 }
 
 // WsAuthenticatedOrdersResponse response from Orders authenticated subscription
 type WsAuthenticatedOrdersResponse struct {
-	WsAuthenticatedDataResponse
+	WsResponse
 	Data []WsAuthenticatedOrdersResponseData `json:"data"`
+}
+
+// WsOldOrderUpdate response from Orders authenticated subscription
+type WsOldOrderUpdate struct {
+	WsResponse
+	Data WsAuthenticatedOrdersResponseData `json:"data"`
 }
 
 // WsAuthenticatedOrdersResponseData order data
 type WsAuthenticatedOrdersResponseData struct {
-	SeqID            int64         `json:"seq-id"`
-	OrderID          int64         `json:"order-id"`
-	Symbol           currency.Pair `json:"symbol"`
-	AccountID        int64         `json:"account-id"`
-	OrderAmount      float64       `json:"order-amount,string"`
-	OrderPrice       float64       `json:"order-price,string"`
-	CreatedAt        int64         `json:"created-at"`
-	OrderType        string        `json:"order-type"`
-	OrderSource      string        `json:"order-source"`
-	OrderState       string        `json:"order-state"`
-	Role             string        `json:"role"`
-	Price            float64       `json:"price,string"`
-	FilledAmount     float64       `json:"filled-amount,string"`
-	UnfilledAmount   float64       `json:"unfilled-amount,string"`
-	FilledCashAmount float64       `json:"filled-cash-amount,string"`
-	FilledFees       float64       `json:"filled-fees,string"`
+	SeqID            int64   `json:"seq-id"`
+	OrderID          int64   `json:"order-id"`
+	Symbol           string  `json:"symbol"`
+	AccountID        int64   `json:"account-id"`
+	OrderAmount      float64 `json:"order-amount,string"`
+	OrderPrice       float64 `json:"order-price,string"`
+	CreatedAt        int64   `json:"created-at"`
+	OrderType        string  `json:"order-type"`
+	OrderSource      string  `json:"order-source"`
+	OrderState       string  `json:"order-state"`
+	Role             string  `json:"role"`
+	Price            float64 `json:"price,string"`
+	FilledAmount     float64 `json:"filled-amount,string"`
+	UnfilledAmount   float64 `json:"unfilled-amount,string"`
+	FilledCashAmount float64 `json:"filled-cash-amount,string"`
+	FilledFees       float64 `json:"filled-fees,string"`
 }
 
 // WsAuthenticatedAccountsListResponse response from AccountsList authenticated endpoint
 type WsAuthenticatedAccountsListResponse struct {
-	WsAuthenticatedDataResponse
+	WsResponse
 	Data []WsAuthenticatedAccountsListResponseData `json:"data"`
 }
 
@@ -496,30 +578,32 @@ type WsAuthenticatedAccountsListResponseDataList struct {
 
 // WsAuthenticatedOrdersListResponse response from OrdersList authenticated endpoint
 type WsAuthenticatedOrdersListResponse struct {
-	WsAuthenticatedDataResponse
-	Data []WsAuthenticatedOrdersListResponseData `json:"data"`
-}
-
-// WsAuthenticatedOrdersListResponseData contains order details
-type WsAuthenticatedOrdersListResponseData struct {
-	ID               int64         `json:"id"`
-	Symbol           currency.Pair `json:"symbol"`
-	AccountID        int64         `json:"account-id"`
-	Amount           float64       `json:"amount,string"`
-	Price            float64       `json:"price,string"`
-	CreatedAt        int64         `json:"created-at"`
-	Type             string        `json:"type"`
-	FilledAmount     float64       `json:"filled-amount,string"`
-	FilledCashAmount float64       `json:"filled-cash-amount,string"`
-	FilledFees       float64       `json:"filled-fees,string"`
-	FinishedAt       int64         `json:"finished-at"`
-	Source           string        `json:"source"`
-	State            string        `json:"state"`
-	CanceledAt       int64         `json:"canceled-at"`
+	WsResponse
+	Data []OrderInfo `json:"data"`
 }
 
 // WsAuthenticatedOrderDetailResponse response from OrderDetail authenticated endpoint
 type WsAuthenticatedOrderDetailResponse struct {
-	WsAuthenticatedDataResponse
-	Data WsAuthenticatedOrdersListResponseData `json:"data"`
+	WsResponse
+	Data OrderInfo `json:"data"`
+}
+
+// WsPong sent for pong messages
+type WsPong struct {
+	Pong int64 `json:"pong"`
+}
+
+type wsKLineResponseThing struct {
+	Data []struct {
+		Amount float64 `json:"amount"`
+		Close  float64 `json:"close"`
+		Count  float64 `json:"count"`
+		High   float64 `json:"high"`
+		ID     int64   `json:"id"`
+		Low    float64 `json:"low"`
+		Open   float64 `json:"open"`
+		Volume float64 `json:"vol"`
+	} `json:"data"`
+	Rep    string `json:"rep"`
+	Status string `json:"status"`
 }

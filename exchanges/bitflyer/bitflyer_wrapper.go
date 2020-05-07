@@ -1,16 +1,113 @@
 package bitflyer
 
 import (
-	"errors"
+	"strings"
 	"sync"
+	"time"
 
-	"github.com/thrasher-/gocryptotrader/common"
-	"github.com/thrasher-/gocryptotrader/currency"
-	exchange "github.com/thrasher-/gocryptotrader/exchanges"
-	"github.com/thrasher-/gocryptotrader/exchanges/orderbook"
-	"github.com/thrasher-/gocryptotrader/exchanges/ticker"
-	log "github.com/thrasher-/gocryptotrader/logger"
+	"github.com/thrasher-corp/gocryptotrader/common"
+	"github.com/thrasher-corp/gocryptotrader/config"
+	"github.com/thrasher-corp/gocryptotrader/currency"
+	exchange "github.com/thrasher-corp/gocryptotrader/exchanges"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/account"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/asset"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/kline"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/order"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/orderbook"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/protocol"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/request"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/ticker"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/websocket/wshandler"
+	"github.com/thrasher-corp/gocryptotrader/log"
+	"github.com/thrasher-corp/gocryptotrader/portfolio/withdraw"
 )
+
+// GetDefaultConfig returns a default exchange config
+func (b *Bitflyer) GetDefaultConfig() (*config.ExchangeConfig, error) {
+	b.SetDefaults()
+	exchCfg := new(config.ExchangeConfig)
+	exchCfg.Name = b.Name
+	exchCfg.HTTPTimeout = exchange.DefaultHTTPTimeout
+	exchCfg.BaseCurrencies = b.BaseCurrencies
+
+	err := b.SetupDefaults(exchCfg)
+	if err != nil {
+		return nil, err
+	}
+
+	if b.Features.Supports.RESTCapabilities.AutoPairUpdates {
+		err = b.UpdateTradablePairs(true)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return exchCfg, nil
+}
+
+// SetDefaults sets the basic defaults for Bitflyer
+func (b *Bitflyer) SetDefaults() {
+	b.Name = "Bitflyer"
+	b.Enabled = true
+	b.Verbose = true
+	b.API.CredentialsValidator.RequiresKey = true
+	b.API.CredentialsValidator.RequiresSecret = true
+
+	b.CurrencyPairs = currency.PairsManager{
+		AssetTypes: asset.Items{
+			asset.Spot,
+			asset.Futures,
+		},
+		UseGlobalFormat: true,
+		RequestFormat: &currency.PairFormat{
+			Delimiter: "_",
+			Uppercase: true,
+		},
+		ConfigFormat: &currency.PairFormat{
+			Delimiter: "_",
+			Uppercase: true,
+		},
+	}
+
+	b.Features = exchange.Features{
+		Supports: exchange.FeaturesSupported{
+			REST:      true,
+			Websocket: false,
+			RESTCapabilities: protocol.Features{
+				TickerFetching:    true,
+				OrderbookFetching: true,
+				AutoPairUpdates:   true,
+				TradeFee:          true,
+				FiatDepositFee:    true,
+				FiatWithdrawalFee: true,
+			},
+			WithdrawPermissions: exchange.WithdrawCryptoViaWebsiteOnly |
+				exchange.AutoWithdrawFiat,
+		},
+		Enabled: exchange.FeaturesEnabled{
+			AutoPairUpdates: true,
+		},
+	}
+
+	b.Requester = request.New(b.Name,
+		common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout),
+		request.WithLimiter(SetRateLimit()))
+
+	b.API.Endpoints.URLDefault = japanURL
+	b.API.Endpoints.URL = b.API.Endpoints.URLDefault
+	b.API.Endpoints.URLSecondaryDefault = chainAnalysis
+	b.API.Endpoints.URLSecondary = b.API.Endpoints.URLSecondaryDefault
+}
+
+// Setup takes in the supplied exchange configuration details and sets params
+func (b *Bitflyer) Setup(exch *config.ExchangeConfig) error {
+	if !exch.Enabled {
+		b.SetEnabled(false)
+		return nil
+	}
+
+	return b.SetupDefaults(exch)
+}
 
 // Start starts the Bitflyer go routine
 func (b *Bitflyer) Start(wg *sync.WaitGroup) {
@@ -24,33 +121,64 @@ func (b *Bitflyer) Start(wg *sync.WaitGroup) {
 // Run implements the Bitflyer wrapper
 func (b *Bitflyer) Run() {
 	if b.Verbose {
-		log.Debugf("%s Websocket: %s.", b.GetName(), common.IsEnabled(b.Websocket.IsEnabled()))
-		log.Debugf("%s polling delay: %ds.\n", b.GetName(), b.RESTPollingDelay)
-		log.Debugf("%s %d currencies enabled: %s.\n", b.GetName(), len(b.EnabledPairs), b.EnabledPairs)
+		b.PrintEnabledPairs()
 	}
 
-	/*
-		marketInfo, err := b.GetMarkets()
-		if err != nil {
-			log.Printf("%s Failed to get available symbols.\n", b.GetName())
-		} else {
-			var exchangeProducts []string
+	if !b.GetEnabledFeatures().AutoPairUpdates {
+		return
+	}
 
-			for _, info := range marketInfo {
-				exchangeProducts = append(exchangeProducts, info.ProductCode)
-			}
+	err := b.UpdateTradablePairs(false)
+	if err != nil {
+		log.Errorf(log.ExchangeSys, "%s failed to update tradable pairs. Err: %s", b.Name, err)
+	}
+}
 
-			err = b.UpdateAvailableCurrencies(exchangeProducts, false)
-			if err != nil {
-				log.Printf("%s Failed to get config.\n", b.GetName())
-			}
+// FetchTradablePairs returns a list of the exchanges tradable pairs
+func (b *Bitflyer) FetchTradablePairs(assetType asset.Item) ([]string, error) {
+	pairs, err := b.GetMarkets()
+	if err != nil {
+		return nil, err
+	}
+
+	var products []string
+	for i := range pairs {
+		if pairs[i].Alias != "" && assetType == asset.Futures {
+			products = append(products, pairs[i].Alias)
+		} else if pairs[i].Alias == "" &&
+			assetType == asset.Spot &&
+			strings.Contains(pairs[i].ProductCode,
+				b.GetPairFormat(assetType, false).Delimiter) {
+			products = append(products, pairs[i].ProductCode)
 		}
-	*/
+	}
+	return products, nil
+}
+
+// UpdateTradablePairs updates the exchanges available pairs and stores
+// them in the exchanges config
+func (b *Bitflyer) UpdateTradablePairs(forceUpdate bool) error {
+	for x := range b.CurrencyPairs.AssetTypes {
+		a := b.CurrencyPairs.AssetTypes[x]
+		pairs, err := b.FetchTradablePairs(a)
+		if err != nil {
+			return err
+		}
+
+		err = b.UpdatePairs(currency.NewPairsFromStrings(pairs),
+			a,
+			false,
+			forceUpdate)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // UpdateTicker updates and returns the ticker for a currency pair
-func (b *Bitflyer) UpdateTicker(p currency.Pair, assetType string) (ticker.Price, error) {
-	var tickerPrice ticker.Price
+func (b *Bitflyer) UpdateTicker(p currency.Pair, assetType asset.Item) (*ticker.Price, error) {
+	tickerPrice := new(ticker.Price)
 
 	p = b.CheckFXString(p)
 
@@ -62,11 +190,9 @@ func (b *Bitflyer) UpdateTicker(p currency.Pair, assetType string) (ticker.Price
 	tickerPrice.Pair = p
 	tickerPrice.Ask = tickerNew.BestAsk
 	tickerPrice.Bid = tickerNew.BestBid
-	// tickerPrice.Low
 	tickerPrice.Last = tickerNew.Last
 	tickerPrice.Volume = tickerNew.Volume
-	// tickerPrice.High
-	err = ticker.ProcessTicker(b.GetName(), &tickerPrice, assetType)
+	err = ticker.ProcessTicker(b.Name, tickerPrice, assetType)
 	if err != nil {
 		return tickerPrice, err
 	}
@@ -74,9 +200,9 @@ func (b *Bitflyer) UpdateTicker(p currency.Pair, assetType string) (ticker.Price
 	return ticker.GetTicker(b.Name, p, assetType)
 }
 
-// GetTickerPrice returns the ticker for a currency pair
-func (b *Bitflyer) GetTickerPrice(p currency.Pair, assetType string) (ticker.Price, error) {
-	tick, err := ticker.GetTicker(b.GetName(), p, ticker.Spot)
+// FetchTicker returns the ticker for a currency pair
+func (b *Bitflyer) FetchTicker(p currency.Pair, assetType asset.Item) (*ticker.Price, error) {
+	tick, err := ticker.GetTicker(b.Name, p, assetType)
 	if err != nil {
 		return b.UpdateTicker(p, assetType)
 	}
@@ -85,16 +211,16 @@ func (b *Bitflyer) GetTickerPrice(p currency.Pair, assetType string) (ticker.Pri
 
 // CheckFXString upgrades currency pair if needed
 func (b *Bitflyer) CheckFXString(p currency.Pair) currency.Pair {
-	if common.StringContains(p.Base.String(), "FX") {
+	if strings.Contains(p.Base.String(), "FX") {
 		p.Base = currency.FX_BTC
 		return p
 	}
 	return p
 }
 
-// GetOrderbookEx returns the orderbook for a currency pair
-func (b *Bitflyer) GetOrderbookEx(p currency.Pair, assetType string) (orderbook.Base, error) {
-	ob, err := orderbook.Get(b.GetName(), p, assetType)
+// FetchOrderbook returns the orderbook for a currency pair
+func (b *Bitflyer) FetchOrderbook(p currency.Pair, assetType asset.Item) (*orderbook.Base, error) {
+	ob, err := orderbook.Get(b.Name, p, assetType)
 	if err != nil {
 		return b.UpdateOrderbook(p, assetType)
 	}
@@ -102,8 +228,8 @@ func (b *Bitflyer) GetOrderbookEx(p currency.Pair, assetType string) (orderbook.
 }
 
 // UpdateOrderbook updates and returns the orderbook for a currency pair
-func (b *Bitflyer) UpdateOrderbook(p currency.Pair, assetType string) (orderbook.Base, error) {
-	var orderBook orderbook.Base
+func (b *Bitflyer) UpdateOrderbook(p currency.Pair, assetType asset.Item) (*orderbook.Base, error) {
+	orderBook := new(orderbook.Base)
 
 	p = b.CheckFXString(p)
 
@@ -121,7 +247,7 @@ func (b *Bitflyer) UpdateOrderbook(p currency.Pair, assetType string) (orderbook
 	}
 
 	orderBook.Pair = p
-	orderBook.ExchangeName = b.GetName()
+	orderBook.ExchangeName = b.Name
 	orderBook.AssetType = assetType
 
 	err = orderBook.Process()
@@ -132,66 +258,59 @@ func (b *Bitflyer) UpdateOrderbook(p currency.Pair, assetType string) (orderbook
 	return orderbook.Get(b.Name, p, assetType)
 }
 
-// GetAccountInfo retrieves balances for all enabled currencies on the
+// UpdateAccountInfo retrieves balances for all enabled currencies on the
 // Bitflyer exchange
-func (b *Bitflyer) GetAccountInfo() (exchange.AccountInfo, error) {
-	var response exchange.AccountInfo
-	response.Exchange = b.GetName()
-	// accountBalance, err := b.GetAccountBalance()
-	// if err != nil {
-	// 	return response, err
-	// }
-	if !b.Enabled {
-		return response, errors.New("exchange not enabled")
+func (b *Bitflyer) UpdateAccountInfo() (account.Holdings, error) {
+	return account.Holdings{}, common.ErrNotYetImplemented
+}
+
+// FetchAccountInfo retrieves balances for all enabled currencies
+func (b *Bitflyer) FetchAccountInfo() (account.Holdings, error) {
+	acc, err := account.GetHoldings(b.Name)
+	if err != nil {
+		return b.UpdateAccountInfo()
 	}
 
-	// implement once authenticated requests are introduced
-
-	return response, nil
+	return acc, nil
 }
 
 // GetFundingHistory returns funding history, deposits and
 // withdrawals
 func (b *Bitflyer) GetFundingHistory() ([]exchange.FundHistory, error) {
-	var fundHistory []exchange.FundHistory
-	return fundHistory, common.ErrFunctionNotSupported
+	return nil, common.ErrFunctionNotSupported
 }
 
 // GetExchangeHistory returns historic trade data since exchange opening.
-func (b *Bitflyer) GetExchangeHistory(p currency.Pair, assetType string) ([]exchange.TradeHistory, error) {
-	var resp []exchange.TradeHistory
-
-	return resp, common.ErrNotYetImplemented
+func (b *Bitflyer) GetExchangeHistory(p currency.Pair, assetType asset.Item) ([]exchange.TradeHistory, error) {
+	return nil, common.ErrNotYetImplemented
 }
 
 // SubmitOrder submits a new order
-func (b *Bitflyer) SubmitOrder(p currency.Pair, side exchange.OrderSide, orderType exchange.OrderType, amount, price float64, clientID string) (exchange.SubmitOrderResponse, error) {
-	var submitOrderResponse exchange.SubmitOrderResponse
-
-	return submitOrderResponse, common.ErrNotYetImplemented
+func (b *Bitflyer) SubmitOrder(s *order.Submit) (order.SubmitResponse, error) {
+	return order.SubmitResponse{}, common.ErrNotYetImplemented
 }
 
 // ModifyOrder will allow of changing orderbook placement and limit to
 // market conversion
-func (b *Bitflyer) ModifyOrder(action *exchange.ModifyOrder) (string, error) {
+func (b *Bitflyer) ModifyOrder(action *order.Modify) (string, error) {
 	return "", common.ErrFunctionNotSupported
 }
 
 // CancelOrder cancels an order by its corresponding ID number
-func (b *Bitflyer) CancelOrder(order *exchange.OrderCancellation) error {
+func (b *Bitflyer) CancelOrder(order *order.Cancel) error {
 	return common.ErrNotYetImplemented
 }
 
 // CancelAllOrders cancels all orders associated with a currency pair
-func (b *Bitflyer) CancelAllOrders(_ *exchange.OrderCancellation) (exchange.CancelAllOrdersResponse, error) {
+func (b *Bitflyer) CancelAllOrders(_ *order.Cancel) (order.CancelAllResponse, error) {
 	// TODO, implement BitFlyer API
 	b.CancelAllExistingOrders()
-	return exchange.CancelAllOrdersResponse{}, common.ErrNotYetImplemented
+	return order.CancelAllResponse{}, common.ErrNotYetImplemented
 }
 
 // GetOrderInfo returns information on a current open order
-func (b *Bitflyer) GetOrderInfo(orderID string) (exchange.OrderDetail, error) {
-	var orderDetail exchange.OrderDetail
+func (b *Bitflyer) GetOrderInfo(orderID string) (order.Detail, error) {
+	var orderDetail order.Detail
 	return orderDetail, common.ErrNotYetImplemented
 }
 
@@ -202,41 +321,41 @@ func (b *Bitflyer) GetDepositAddress(cryptocurrency currency.Code, accountID str
 
 // WithdrawCryptocurrencyFunds returns a withdrawal ID when a withdrawal is
 // submitted
-func (b *Bitflyer) WithdrawCryptocurrencyFunds(withdrawRequest *exchange.WithdrawRequest) (string, error) {
-	return "", common.ErrNotYetImplemented
+func (b *Bitflyer) WithdrawCryptocurrencyFunds(withdrawRequest *withdraw.Request) (*withdraw.ExchangeResponse, error) {
+	return nil, common.ErrNotYetImplemented
 }
 
 // WithdrawFiatFunds returns a withdrawal ID when a
 // withdrawal is submitted
-func (b *Bitflyer) WithdrawFiatFunds(withdrawRequest *exchange.WithdrawRequest) (string, error) {
-	return "", common.ErrNotYetImplemented
+func (b *Bitflyer) WithdrawFiatFunds(withdrawRequest *withdraw.Request) (*withdraw.ExchangeResponse, error) {
+	return nil, common.ErrNotYetImplemented
 }
 
 // WithdrawFiatFundsToInternationalBank returns a withdrawal ID when a
 // withdrawal is submitted
-func (b *Bitflyer) WithdrawFiatFundsToInternationalBank(withdrawRequest *exchange.WithdrawRequest) (string, error) {
-	return "", common.ErrNotYetImplemented
+func (b *Bitflyer) WithdrawFiatFundsToInternationalBank(withdrawRequest *withdraw.Request) (*withdraw.ExchangeResponse, error) {
+	return nil, common.ErrNotYetImplemented
 }
 
 // GetWebsocket returns a pointer to the exchange websocket
-func (b *Bitflyer) GetWebsocket() (*exchange.Websocket, error) {
+func (b *Bitflyer) GetWebsocket() (*wshandler.Websocket, error) {
 	return nil, common.ErrNotYetImplemented
 }
 
 // GetActiveOrders retrieves any orders that are active/open
-func (b *Bitflyer) GetActiveOrders(getOrdersRequest *exchange.GetOrdersRequest) ([]exchange.OrderDetail, error) {
+func (b *Bitflyer) GetActiveOrders(getOrdersRequest *order.GetOrdersRequest) ([]order.Detail, error) {
 	return nil, common.ErrNotYetImplemented
 }
 
 // GetOrderHistory retrieves account order information
 // Can Limit response to specific order status
-func (b *Bitflyer) GetOrderHistory(getOrdersRequest *exchange.GetOrdersRequest) ([]exchange.OrderDetail, error) {
+func (b *Bitflyer) GetOrderHistory(getOrdersRequest *order.GetOrdersRequest) ([]order.Detail, error) {
 	return nil, common.ErrNotYetImplemented
 }
 
 // GetFeeByType returns an estimate of fee based on the type of transaction
 func (b *Bitflyer) GetFeeByType(feeBuilder *exchange.FeeBuilder) (float64, error) {
-	if (b.APIKey == "" || b.APISecret == "") && // Todo check connection status
+	if !b.AllowAuthenticatedRequest() && // Todo check connection status
 		feeBuilder.FeeType == exchange.CryptocurrencyTradeFee {
 		feeBuilder.FeeType = exchange.OfflineTradeFee
 	}
@@ -245,22 +364,34 @@ func (b *Bitflyer) GetFeeByType(feeBuilder *exchange.FeeBuilder) (float64, error
 
 // SubscribeToWebsocketChannels appends to ChannelsToSubscribe
 // which lets websocket.manageSubscriptions handle subscribing
-func (b *Bitflyer) SubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+func (b *Bitflyer) SubscribeToWebsocketChannels(channels []wshandler.WebsocketChannelSubscription) error {
 	return common.ErrFunctionNotSupported
 }
 
 // UnsubscribeToWebsocketChannels removes from ChannelsToSubscribe
 // which lets websocket.manageSubscriptions handle unsubscribing
-func (b *Bitflyer) UnsubscribeToWebsocketChannels(channels []exchange.WebsocketChannelSubscription) error {
+func (b *Bitflyer) UnsubscribeToWebsocketChannels(channels []wshandler.WebsocketChannelSubscription) error {
 	return common.ErrFunctionNotSupported
 }
 
 // GetSubscriptions returns a copied list of subscriptions
-func (b *Bitflyer) GetSubscriptions() ([]exchange.WebsocketChannelSubscription, error) {
+func (b *Bitflyer) GetSubscriptions() ([]wshandler.WebsocketChannelSubscription, error) {
 	return nil, common.ErrFunctionNotSupported
 }
 
 // AuthenticateWebsocket sends an authentication message to the websocket
 func (b *Bitflyer) AuthenticateWebsocket() error {
 	return common.ErrFunctionNotSupported
+}
+
+// ValidateCredentials validates current credentials used for wrapper
+// functionality
+func (b *Bitflyer) ValidateCredentials() error {
+	_, err := b.UpdateAccountInfo()
+	return b.CheckTransientError(err)
+}
+
+// GetHistoricCandles returns candles between a time period for a set time interval
+func (b *Bitflyer) GetHistoricCandles(pair currency.Pair, a asset.Item, start, end time.Time, interval time.Duration) (kline.Item, error) {
+	return kline.Item{}, common.ErrNotYetImplemented
 }

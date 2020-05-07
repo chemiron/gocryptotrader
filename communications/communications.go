@@ -1,12 +1,14 @@
 package communications
 
 import (
-	"github.com/thrasher-/gocryptotrader/communications/base"
-	"github.com/thrasher-/gocryptotrader/communications/slack"
-	"github.com/thrasher-/gocryptotrader/communications/smsglobal"
-	"github.com/thrasher-/gocryptotrader/communications/smtpservice"
-	"github.com/thrasher-/gocryptotrader/communications/telegram"
-	"github.com/thrasher-/gocryptotrader/config"
+	"errors"
+
+	"github.com/thrasher-corp/gocryptotrader/communications/base"
+	"github.com/thrasher-corp/gocryptotrader/communications/slack"
+	"github.com/thrasher-corp/gocryptotrader/communications/smsglobal"
+	"github.com/thrasher-corp/gocryptotrader/communications/smtpservice"
+	"github.com/thrasher-corp/gocryptotrader/communications/telegram"
+	"github.com/thrasher-corp/gocryptotrader/config"
 )
 
 // Communications is the overarching type across the communications packages
@@ -15,9 +17,12 @@ type Communications struct {
 }
 
 // NewComm sets up and returns a pointer to a Communications object
-func NewComm(cfg *config.CommunicationsConfig) *Communications {
-	var comm Communications
+func NewComm(cfg *config.CommunicationsConfig) (*Communications, error) {
+	if !cfg.IsAnyEnabled() {
+		return nil, errors.New("no communication relayers enabled")
+	}
 
+	var comm Communications
 	if cfg.TelegramConfig.Enabled {
 		Telegram := new(telegram.Telegram)
 		Telegram.Setup(cfg)
@@ -43,5 +48,5 @@ func NewComm(cfg *config.CommunicationsConfig) *Communications {
 	}
 
 	comm.Setup()
-	return &comm
+	return &comm, nil
 }

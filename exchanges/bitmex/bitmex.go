@@ -2,29 +2,25 @@ package bitmex
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
-	"github.com/thrasher-/gocryptotrader/common"
-	"github.com/thrasher-/gocryptotrader/config"
-	"github.com/thrasher-/gocryptotrader/currency"
-	exchange "github.com/thrasher-/gocryptotrader/exchanges"
-	"github.com/thrasher-/gocryptotrader/exchanges/request"
-	"github.com/thrasher-/gocryptotrader/exchanges/ticker"
-	log "github.com/thrasher-/gocryptotrader/logger"
+	"github.com/thrasher-corp/gocryptotrader/common/crypto"
+	"github.com/thrasher-corp/gocryptotrader/currency"
+	exchange "github.com/thrasher-corp/gocryptotrader/exchanges"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/request"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/websocket/wshandler"
 )
 
 // Bitmex is the overarching type across this package
 type Bitmex struct {
 	exchange.Base
-	WebsocketConn *websocket.Conn
-	wsRequestMtx  sync.Mutex
+	WebsocketConn *wshandler.WebsocketConnection
 }
 
 const (
@@ -98,11 +94,6 @@ const (
 	bitmexEndpointUserWalletSummary     = "/user/walletSummary"
 	bitmexEndpointUserRequestWithdraw   = "/user/requestWithdrawal"
 
-	// Rate limits - 150 requests per 5 minutes
-	bitmexUnauthRate = 30
-	// 300 requests per 5 minutes
-	bitmexAuthRate = 40
-
 	// ContractPerpetual perpetual contract type
 	ContractPerpetual = iota
 	// ContractFutures futures contract type
@@ -112,87 +103,6 @@ const (
 	// ContractUpsideProfit upside profit contract type
 	ContractUpsideProfit
 )
-
-// SetDefaults sets the basic defaults for Bitmex
-func (b *Bitmex) SetDefaults() {
-	b.Name = "Bitmex"
-	b.Enabled = false
-	b.Verbose = false
-	b.RESTPollingDelay = 10
-	b.APIWithdrawPermissions = exchange.AutoWithdrawCryptoWithAPIPermission |
-		exchange.WithdrawCryptoWithEmail |
-		exchange.WithdrawCryptoWith2FA |
-		exchange.NoFiatWithdrawals
-	b.RequestCurrencyPairFormat.Delimiter = ""
-	b.RequestCurrencyPairFormat.Uppercase = true
-	b.ConfigCurrencyPairFormat.Delimiter = ""
-	b.ConfigCurrencyPairFormat.Uppercase = true
-	b.AssetTypes = []string{ticker.Spot}
-	b.Requester = request.New(b.Name,
-		request.NewRateLimit(time.Second, bitmexAuthRate),
-		request.NewRateLimit(time.Second, bitmexUnauthRate),
-		common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
-	b.APIUrlDefault = bitmexAPIURL
-	b.APIUrl = b.APIUrlDefault
-	b.SupportsAutoPairUpdating = true
-	b.WebsocketInit()
-	b.Websocket.Functionality = exchange.WebsocketTradeDataSupported |
-		exchange.WebsocketOrderbookSupported |
-		exchange.WebsocketSubscribeSupported |
-		exchange.WebsocketUnsubscribeSupported |
-		exchange.WebsocketAuthenticatedEndpointsSupported |
-		exchange.WebsocketAccountDataSupported
-}
-
-// Setup takes in the supplied exchange configuration details and sets params
-func (b *Bitmex) Setup(exch *config.ExchangeConfig) {
-	if !exch.Enabled {
-		b.SetEnabled(false)
-	} else {
-		b.Enabled = true
-		b.AuthenticatedAPISupport = exch.AuthenticatedAPISupport
-		b.AuthenticatedWebsocketAPISupport = exch.AuthenticatedWebsocketAPISupport
-		b.SetAPIKeys(exch.APIKey, exch.APISecret, "", false)
-		b.RESTPollingDelay = exch.RESTPollingDelay
-		b.Verbose = exch.Verbose
-		b.HTTPDebugging = exch.HTTPDebugging
-		b.Websocket.SetWsStatusAndConnection(exch.Websocket)
-		b.BaseCurrencies = exch.BaseCurrencies
-		b.AvailablePairs = exch.AvailablePairs
-		b.EnabledPairs = exch.EnabledPairs
-		err := b.SetCurrencyPairFormat()
-		if err != nil {
-			log.Fatal(err)
-		}
-		err = b.SetAssetTypes()
-		if err != nil {
-			log.Fatal(err)
-		}
-		err = b.SetAutoPairDefaults()
-		if err != nil {
-			log.Fatal(err)
-		}
-		err = b.SetAPIURL(exch)
-		if err != nil {
-			log.Fatal(err)
-		}
-		err = b.SetClientProxyAddress(exch.ProxyAddress)
-		if err != nil {
-			log.Fatal(err)
-		}
-		err = b.WebsocketSetup(b.WsConnector,
-			b.Subscribe,
-			b.Unsubscribe,
-			exch.Name,
-			exch.Websocket,
-			exch.Verbose,
-			bitmexWSURL,
-			exch.WebsocketURL)
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
-}
 
 // GetAnnouncement returns the general announcements from Bitmex
 func (b *Bitmex) GetAnnouncement() ([]Announcement, error) {
@@ -414,9 +324,8 @@ func (b *Bitmex) GetCurrentNotifications() ([]Notification, error) {
 // GetOrders returns all the orders, open and closed
 func (b *Bitmex) GetOrders(params *OrdersRequest) ([]Order, error) {
 	var orders []Order
-
 	return orders, b.SendAuthenticatedHTTPRequest(http.MethodGet,
-		fmt.Sprintf("%v%v", bitmexEndpointOrder, ""),
+		bitmexEndpointOrder,
 		params,
 		&orders)
 }
@@ -854,21 +763,35 @@ func (b *Bitmex) GetWalletSummary(currency string) ([]TransactionInfo, error) {
 // SendHTTPRequest sends an unauthenticated HTTP request
 func (b *Bitmex) SendHTTPRequest(path string, params Parameter, result interface{}) error {
 	var respCheck interface{}
-	path = b.APIUrl + path
+	path = b.API.Endpoints.URL + path
 	if params != nil {
 		if !params.IsNil() {
 			encodedPath, err := params.ToURLVals(path)
 			if err != nil {
 				return err
 			}
-			err = b.SendPayload(http.MethodGet, encodedPath, nil, nil, &respCheck, false, false, b.Verbose, b.HTTPDebugging)
+			err = b.SendPayload(context.Background(), &request.Item{
+				Method:        http.MethodGet,
+				Path:          encodedPath,
+				Result:        &respCheck,
+				Verbose:       b.Verbose,
+				HTTPDebugging: b.HTTPDebugging,
+				HTTPRecording: b.HTTPRecording,
+			})
 			if err != nil {
 				return err
 			}
 			return b.CaptureError(respCheck, result)
 		}
 	}
-	err := b.SendPayload(http.MethodGet, path, nil, nil, &respCheck, false, false, b.Verbose, b.HTTPDebugging)
+	err := b.SendPayload(context.Background(), &request.Item{
+		Method:        http.MethodGet,
+		Path:          path,
+		Result:        &respCheck,
+		Verbose:       b.Verbose,
+		HTTPDebugging: b.HTTPDebugging,
+		HTTPRecording: b.HTTPRecording,
+	})
 	if err != nil {
 		return err
 	}
@@ -877,19 +800,20 @@ func (b *Bitmex) SendHTTPRequest(path string, params Parameter, result interface
 
 // SendAuthenticatedHTTPRequest sends an authenticated HTTP request to bitmex
 func (b *Bitmex) SendAuthenticatedHTTPRequest(verb, path string, params Parameter, result interface{}) error {
-	if !b.AuthenticatedAPISupport {
+	if !b.AllowAuthenticatedRequest() {
 		return fmt.Errorf(exchange.WarningAuthenticatedRequestWithoutCredentialsSet,
 			b.Name)
 	}
 
-	timestamp := time.Now().Add(time.Second * 10).UnixNano()
+	expires := time.Now().Add(time.Second * 10)
+	timestamp := expires.UnixNano()
 	timestampStr := strconv.FormatInt(timestamp, 10)
 	timestampNew := timestampStr[:13]
 
 	headers := make(map[string]string)
 	headers["Content-Type"] = "application/json"
 	headers["api-expires"] = timestampNew
-	headers["api-key"] = b.APIKey
+	headers["api-key"] = b.API.Credentials.Key
 
 	var payload string
 	if params != nil {
@@ -897,30 +821,35 @@ func (b *Bitmex) SendAuthenticatedHTTPRequest(verb, path string, params Paramete
 		if err != nil {
 			return err
 		}
-		data, err := common.JSONEncode(params)
+		data, err := json.Marshal(params)
 		if err != nil {
 			return err
 		}
 		payload = string(data)
 	}
 
-	hmac := common.GetHMAC(common.HashSHA256,
+	hmac := crypto.GetHMAC(crypto.HashSHA256,
 		[]byte(verb+"/api/v1"+path+timestampNew+payload),
-		[]byte(b.APISecret))
+		[]byte(b.API.Credentials.Secret))
 
-	headers["api-signature"] = common.HexEncodeToString(hmac)
+	headers["api-signature"] = crypto.HexEncodeToString(hmac)
 
 	var respCheck interface{}
 
-	err := b.SendPayload(verb,
-		b.APIUrl+path,
-		headers,
-		bytes.NewBuffer([]byte(payload)),
-		&respCheck,
-		true,
-		false,
-		b.Verbose,
-		b.HTTPDebugging)
+	ctx, cancel := context.WithDeadline(context.Background(), expires)
+	defer cancel()
+	err := b.SendPayload(ctx, &request.Item{
+		Method:        verb,
+		Path:          b.API.Endpoints.URL + path,
+		Headers:       headers,
+		Body:          bytes.NewBuffer([]byte(payload)),
+		Result:        &respCheck,
+		AuthRequest:   true,
+		Verbose:       b.Verbose,
+		HTTPDebugging: b.HTTPDebugging,
+		HTTPRecording: b.HTTPRecording,
+		Endpoint:      request.Auth,
+	})
 	if err != nil {
 		return err
 	}
@@ -937,14 +866,14 @@ func (b *Bitmex) CaptureError(resp, reType interface{}) error {
 		return err
 	}
 
-	err = common.JSONDecode(marshalled, &Error)
+	err = json.Unmarshal(marshalled, &Error)
 	if err == nil {
 		return fmt.Errorf("bitmex error %s: %s",
 			Error.Error.Name,
 			Error.Error.Message)
 	}
 
-	return common.JSONDecode(marshalled, reType)
+	return json.Unmarshal(marshalled, reType)
 }
 
 // GetFee returns an estimate of fee based on type of transaction

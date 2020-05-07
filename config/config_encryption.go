@@ -5,12 +5,14 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 
-	"github.com/thrasher-/gocryptotrader/common"
-	log "github.com/thrasher-/gocryptotrader/logger"
+	"github.com/thrasher-corp/gocryptotrader/common"
+	"github.com/thrasher-corp/gocryptotrader/common/crypto"
 	"golang.org/x/crypto/scrypt"
 )
 
@@ -32,7 +34,7 @@ var (
 )
 
 // PromptForConfigEncryption asks for encryption key
-func (c *Config) PromptForConfigEncryption() bool {
+func (c *Config) PromptForConfigEncryption(configPath string, dryrun bool) bool {
 	log.Println("Would you like to encrypt your config file (y/n)?")
 
 	input := ""
@@ -42,8 +44,11 @@ func (c *Config) PromptForConfigEncryption() bool {
 	}
 
 	if !common.YesOrNo(input) {
-		c.EncryptConfig = configFileEncryptionDisabled
-		c.SaveConfig("")
+		c.EncryptConfig = fileEncryptionDisabled
+		err := c.SaveConfig(configPath, dryrun)
+		if err != nil {
+			log.Printf("Cannot save config. Error: %s\n", err)
+		}
 		return false
 	}
 	return true
@@ -82,7 +87,7 @@ func PromptForConfigKey(initialSetup bool) ([]byte, error) {
 			cryptoKey = p1
 			break
 		}
-		log.Printf("Passwords did not match, please try again.")
+		log.Println("Passwords did not match, please try again.")
 	}
 	return cryptoKey, nil
 }
@@ -164,7 +169,7 @@ func DecryptConfigFile(configData, key []byte) ([]byte, error) {
 
 // ConfirmConfigJSON confirms JSON in file
 func ConfirmConfigJSON(file []byte, result interface{}) error {
-	return common.JSONDecode(file, &result)
+	return json.Unmarshal(file, &result)
 }
 
 // ConfirmSalt checks whether the encrypted data contains a salt
@@ -191,7 +196,7 @@ func getScryptDK(key, salt []byte) ([]byte, error) {
 
 func makeNewSessionDK(key []byte) ([]byte, error) {
 	var err error
-	storedSalt, err = common.GetRandomSalt([]byte(SaltPrefix), SaltRandomLength)
+	storedSalt, err = crypto.GetRandomSalt([]byte(SaltPrefix), SaltRandomLength)
 	if err != nil {
 		return nil, err
 	}

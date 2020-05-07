@@ -7,277 +7,25 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
+	"io/ioutil"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/thrasher-/gocryptotrader/common"
-	"github.com/thrasher-/gocryptotrader/connchecker"
-	"github.com/thrasher-/gocryptotrader/currency"
-	"github.com/thrasher-/gocryptotrader/currency/forexprovider"
-	"github.com/thrasher-/gocryptotrader/currency/forexprovider/base"
-	log "github.com/thrasher-/gocryptotrader/logger"
-	"github.com/thrasher-/gocryptotrader/portfolio"
+	"github.com/thrasher-corp/gocryptotrader/common"
+	"github.com/thrasher-corp/gocryptotrader/common/convert"
+	"github.com/thrasher-corp/gocryptotrader/common/file"
+	"github.com/thrasher-corp/gocryptotrader/connchecker"
+	"github.com/thrasher-corp/gocryptotrader/currency"
+	"github.com/thrasher-corp/gocryptotrader/currency/forexprovider"
+	"github.com/thrasher-corp/gocryptotrader/database"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/asset"
+	gctscript "github.com/thrasher-corp/gocryptotrader/gctscript/vm"
+	"github.com/thrasher-corp/gocryptotrader/log"
+	"github.com/thrasher-corp/gocryptotrader/portfolio/banking"
 )
-
-// Constants declared here are filename strings and test strings
-const (
-	FXProviderFixer                        = "fixer"
-	EncryptedConfigFile                    = "config.dat"
-	ConfigFile                             = "config.json"
-	ConfigTestFile                         = "../testdata/configtest.json"
-	configFileEncryptionPrompt             = 0
-	configFileEncryptionEnabled            = 1
-	configFileEncryptionDisabled           = -1
-	configPairsLastUpdatedWarningThreshold = 30 // 30 days
-	configDefaultHTTPTimeout               = time.Second * 15
-	configMaxAuthFailres                   = 3
-	defaultNTPAllowedDifference            = 50000000
-	defaultNTPAllowedNegativeDifference    = 50000000
-)
-
-// Constants here hold some messages
-const (
-	ErrExchangeNameEmpty                       = "exchange #%d name is empty"
-	ErrExchangeAvailablePairsEmpty             = "exchange %s avaiable pairs is empty"
-	ErrExchangeEnabledPairsEmpty               = "exchange %s enabled pairs is empty"
-	ErrExchangeBaseCurrenciesEmpty             = "exchange %s base currencies is empty"
-	ErrExchangeNotFound                        = "exchange %s not found"
-	ErrNoEnabledExchanges                      = "no exchanges enabled"
-	ErrCryptocurrenciesEmpty                   = "cryptocurrencies variable is empty"
-	ErrFailureOpeningConfig                    = "fatal error opening %s file. Error: %s"
-	ErrCheckingConfigValues                    = "fatal error checking config values. Error: %s"
-	ErrSavingConfigBytesMismatch               = "config file %q bytes comparison doesn't match, read %s expected %s"
-	WarningWebserverCredentialValuesEmpty      = "webserver support disabled due to empty Username/Password values"
-	WarningWebserverListenAddressInvalid       = "webserver support disabled due to invalid listen address"
-	WarningExchangeAuthAPIDefaultOrEmptyValues = "exchange %s authenticated API support disabled due to default/empty APIKey/Secret/ClientID values"
-	WarningPairsLastUpdatedThresholdExceeded   = "exchange %s last manual update of available currency pairs has exceeded %d days. Manual update required!"
-)
-
-// Constants here define unset default values displayed in the config.json
-// file
-const (
-	APIURLNonDefaultMessage              = "NON_DEFAULT_HTTP_LINK_TO_EXCHANGE_API"
-	WebsocketURLNonDefaultMessage        = "NON_DEFAULT_HTTP_LINK_TO_WEBSOCKET_EXCHANGE_API"
-	DefaultUnsetAPIKey                   = "Key"
-	DefaultUnsetAPISecret                = "Secret"
-	DefaultUnsetAccountPlan              = "accountPlan"
-	DefaultForexProviderExchangeRatesAPI = "ExchangeRates"
-)
-
-// Variables here are used for configuration
-var (
-	Cfg            Config
-	IsInitialSetup bool
-	testBypass     bool
-	m              sync.Mutex
-)
-
-// WebserverConfig struct holds the prestart variables for the webserver.
-type WebserverConfig struct {
-	Enabled                      bool   `json:"enabled"`
-	AdminUsername                string `json:"adminUsername"`
-	AdminPassword                string `json:"adminPassword"`
-	ListenAddress                string `json:"listenAddress"`
-	WebsocketConnectionLimit     int    `json:"websocketConnectionLimit"`
-	WebsocketMaxAuthFailures     int    `json:"websocketMaxAuthFailures"`
-	WebsocketAllowInsecureOrigin bool   `json:"websocketAllowInsecureOrigin"`
-}
-
-// Post holds the bot configuration data
-type Post struct {
-	Data Config `json:"data"`
-}
-
-// CurrencyPairFormatConfig stores the users preferred currency pair display
-type CurrencyPairFormatConfig struct {
-	Uppercase bool   `json:"uppercase"`
-	Delimiter string `json:"delimiter,omitempty"`
-	Separator string `json:"separator,omitempty"`
-	Index     string `json:"index,omitempty"`
-}
-
-// Config is the overarching object that holds all the information for
-// prestart management of Portfolio, Communications, Webserver and Enabled
-// Exchanges
-type Config struct {
-	Name              string                  `json:"name"`
-	EncryptConfig     int                     `json:"encryptConfig"`
-	GlobalHTTPTimeout time.Duration           `json:"globalHTTPTimeout"`
-	Logging           log.Logging             `json:"logging"`
-	Profiler          ProfilerConfig          `json:"profiler"`
-	NTPClient         NTPClientConfig         `json:"ntpclient"`
-	Currency          CurrencyConfig          `json:"currencyConfig"`
-	Communications    CommunicationsConfig    `json:"communications"`
-	Portfolio         portfolio.Base          `json:"portfolioAddresses"`
-	Webserver         WebserverConfig         `json:"webserver"`
-	Exchanges         []ExchangeConfig        `json:"exchanges"`
-	BankAccounts      []BankAccount           `json:"bankAccounts"`
-	ConnectionMonitor ConnectionMonitorConfig `json:"connectionMonitor"`
-
-	// Deprecated config settings, will be removed at a future date
-	CurrencyPairFormat  *CurrencyPairFormatConfig `json:"currencyPairFormat,omitempty"`
-	FiatDisplayCurrency currency.Code             `json:"fiatDispayCurrency,omitempty"`
-	Cryptocurrencies    currency.Currencies       `json:"cryptocurrencies,omitempty"`
-	SMS                 *SMSGlobalConfig          `json:"smsGlobal,omitempty"`
-}
-
-// ConnectionMonitorConfig defines the connection monitor variables to ensure
-// that there is internet connectivity
-type ConnectionMonitorConfig struct {
-	DNSList          []string      `json:"preferredDNSList"`
-	PublicDomainList []string      `json:"preferredDomainList"`
-	CheckInterval    time.Duration `json:"checkInterval"`
-}
-
-// ProfilerConfig defines the profiler configuration to enable pprof
-type ProfilerConfig struct {
-	Enabled bool `json:"enabled"`
-}
-
-// NTPClientConfig defines a network time protocol configuration to allow for
-// positive and negative differences
-type NTPClientConfig struct {
-	Level                     int            `json:"enabled"`
-	Pool                      []string       `json:"pool"`
-	AllowedDifference         *time.Duration `json:"allowedDifference"`
-	AllowedNegativeDifference *time.Duration `json:"allowedNegativeDifference"`
-}
-
-// ExchangeConfig holds all the information needed for each enabled Exchange.
-type ExchangeConfig struct {
-	Name                             string                    `json:"name"`
-	Enabled                          bool                      `json:"enabled"`
-	Verbose                          bool                      `json:"verbose"`
-	Websocket                        bool                      `json:"websocket"`
-	UseSandbox                       bool                      `json:"useSandbox"`
-	RESTPollingDelay                 time.Duration             `json:"restPollingDelay"`
-	HTTPTimeout                      time.Duration             `json:"httpTimeout"`
-	HTTPUserAgent                    string                    `json:"httpUserAgent"`
-	HTTPDebugging                    bool                      `json:"httpDebugging"`
-	AuthenticatedAPISupport          bool                      `json:"authenticatedApiSupport"`
-	AuthenticatedWebsocketAPISupport bool                      `json:"authenticatedWebsocketApiSupport"`
-	APIKey                           string                    `json:"apiKey"`
-	APISecret                        string                    `json:"apiSecret"`
-	APIAuthPEMKeySupport             bool                      `json:"apiAuthPemKeySupport,omitempty"`
-	APIAuthPEMKey                    string                    `json:"apiAuthPemKey,omitempty"`
-	APIURL                           string                    `json:"apiUrl"`
-	APIURLSecondary                  string                    `json:"apiUrlSecondary"`
-	ProxyAddress                     string                    `json:"proxyAddress"`
-	WebsocketURL                     string                    `json:"websocketUrl"`
-	ClientID                         string                    `json:"clientId,omitempty"`
-	AvailablePairs                   currency.Pairs            `json:"availablePairs"`
-	EnabledPairs                     currency.Pairs            `json:"enabledPairs"`
-	BaseCurrencies                   currency.Currencies       `json:"baseCurrencies"`
-	AssetTypes                       string                    `json:"assetTypes"`
-	SupportsAutoPairUpdates          bool                      `json:"supportsAutoPairUpdates"`
-	PairsLastUpdated                 int64                     `json:"pairsLastUpdated,omitempty"`
-	ConfigCurrencyPairFormat         *CurrencyPairFormatConfig `json:"configCurrencyPairFormat"`
-	RequestCurrencyPairFormat        *CurrencyPairFormatConfig `json:"requestCurrencyPairFormat"`
-	BankAccounts                     []BankAccount             `json:"bankAccounts"`
-}
-
-// BankAccount holds differing bank account details by supported funding
-// currency
-type BankAccount struct {
-	Enabled             bool   `json:"enabled,omitempty"`
-	BankName            string `json:"bankName"`
-	BankAddress         string `json:"bankAddress"`
-	AccountName         string `json:"accountName"`
-	AccountNumber       string `json:"accountNumber"`
-	SWIFTCode           string `json:"swiftCode"`
-	IBAN                string `json:"iban"`
-	BSBNumber           string `json:"bsbNumber,omitempty"`
-	SupportedCurrencies string `json:"supportedCurrencies"`
-	SupportedExchanges  string `json:"supportedExchanges,omitempty"`
-}
-
-// BankTransaction defines a related banking transaction
-type BankTransaction struct {
-	ReferenceNumber     string `json:"referenceNumber"`
-	TransactionNumber   string `json:"transactionNumber"`
-	PaymentInstructions string `json:"paymentInstructions"`
-}
-
-// CurrencyConfig holds all the information needed for currency related manipulation
-type CurrencyConfig struct {
-	ForexProviders                []base.Settings           `json:"forexProviders"`
-	CryptocurrencyProvider        CryptocurrencyProvider    `json:"cryptocurrencyProvider"`
-	Cryptocurrencies              currency.Currencies       `json:"cryptocurrencies"`
-	CurrencyPairFormat            *CurrencyPairFormatConfig `json:"currencyPairFormat"`
-	FiatDisplayCurrency           currency.Code             `json:"fiatDisplayCurrency"`
-	CurrencyFileUpdateDuration    time.Duration             `json:"currencyFileUpdateDuration"`
-	ForeignExchangeUpdateDuration time.Duration             `json:"foreignExchangeUpdateDuration"`
-}
-
-// CryptocurrencyProvider defines coinmarketcap tools
-type CryptocurrencyProvider struct {
-	Name        string `json:"name"`
-	Enabled     bool   `json:"enabled"`
-	Verbose     bool   `json:"verbose"`
-	APIkey      string `json:"apiKey"`
-	AccountPlan string `json:"accountPlan"`
-}
-
-// CommunicationsConfig holds all the information needed for each
-// enabled communication package
-type CommunicationsConfig struct {
-	SlackConfig     SlackConfig     `json:"slack"`
-	SMSGlobalConfig SMSGlobalConfig `json:"smsGlobal"`
-	SMTPConfig      SMTPConfig      `json:"smtp"`
-	TelegramConfig  TelegramConfig  `json:"telegram"`
-}
-
-// SlackConfig holds all variables to start and run the Slack package
-type SlackConfig struct {
-	Name              string `json:"name"`
-	Enabled           bool   `json:"enabled"`
-	Verbose           bool   `json:"verbose"`
-	TargetChannel     string `json:"targetChannel"`
-	VerificationToken string `json:"verificationToken"`
-}
-
-// SMSContact stores the SMS contact info
-type SMSContact struct {
-	Name    string `json:"name"`
-	Number  string `json:"number"`
-	Enabled bool   `json:"enabled"`
-}
-
-// SMSGlobalConfig structure holds all the variables you need for instant
-// messaging and broadcast used by SMSGlobal
-type SMSGlobalConfig struct {
-	Name     string       `json:"name"`
-	Enabled  bool         `json:"enabled"`
-	Verbose  bool         `json:"verbose"`
-	Username string       `json:"username"`
-	Password string       `json:"password"`
-	Contacts []SMSContact `json:"contacts"`
-}
-
-// SMTPConfig holds all variables to start and run the SMTP package
-type SMTPConfig struct {
-	Name            string `json:"name"`
-	Enabled         bool   `json:"enabled"`
-	Verbose         bool   `json:"verbose"`
-	Host            string `json:"host"`
-	Port            string `json:"port"`
-	AccountName     string `json:"accountName"`
-	AccountPassword string `json:"accountPassword"`
-	RecipientList   string `json:"recipientList"`
-}
-
-// TelegramConfig holds all variables to start and run the Telegram package
-type TelegramConfig struct {
-	Name              string `json:"name"`
-	Enabled           bool   `json:"enabled"`
-	Verbose           bool   `json:"verbose"`
-	VerificationToken string `json:"verificationToken"`
-}
 
 // GetCurrencyConfig returns currency configurations
 func (c *Config) GetCurrencyConfig() CurrencyConfig {
@@ -286,28 +34,31 @@ func (c *Config) GetCurrencyConfig() CurrencyConfig {
 
 // GetExchangeBankAccounts returns banking details associated with an exchange
 // for depositing funds
-func (c *Config) GetExchangeBankAccounts(exchangeName, depositingCurrency string) (BankAccount, error) {
+func (c *Config) GetExchangeBankAccounts(exchangeName, id, depositingCurrency string) (*banking.Account, error) {
 	m.Lock()
 	defer m.Unlock()
 
 	for x := range c.Exchanges {
 		if strings.EqualFold(c.Exchanges[x].Name, exchangeName) {
 			for y := range c.Exchanges[x].BankAccounts {
-				if common.StringContains(c.Exchanges[x].BankAccounts[y].SupportedCurrencies,
-					depositingCurrency) {
-					return c.Exchanges[x].BankAccounts[y], nil
+				if strings.EqualFold(c.Exchanges[x].BankAccounts[y].ID, id) {
+					if common.StringDataCompareInsensitive(
+						strings.Split(c.Exchanges[x].BankAccounts[y].SupportedCurrencies, ","),
+						depositingCurrency) {
+						return &c.Exchanges[x].BankAccounts[y], nil
+					}
 				}
 			}
 		}
 	}
-	return BankAccount{}, fmt.Errorf("exchange %s bank details not found for %s",
+	return nil, fmt.Errorf("exchange %s bank details not found for %s",
 		exchangeName,
 		depositingCurrency)
 }
 
 // UpdateExchangeBankAccounts updates the configuration for the associated
 // exchange bank
-func (c *Config) UpdateExchangeBankAccounts(exchangeName string, bankCfg []BankAccount) error {
+func (c *Config) UpdateExchangeBankAccounts(exchangeName string, bankCfg []banking.Account) error {
 	m.Lock()
 	defer m.Unlock()
 
@@ -323,25 +74,24 @@ func (c *Config) UpdateExchangeBankAccounts(exchangeName string, bankCfg []BankA
 
 // GetClientBankAccounts returns banking details used for a given exchange
 // and currency
-func (c *Config) GetClientBankAccounts(exchangeName, targetCurrency string) (BankAccount, error) {
+func (c *Config) GetClientBankAccounts(exchangeName, targetCurrency string) (*banking.Account, error) {
 	m.Lock()
 	defer m.Unlock()
 
 	for x := range c.BankAccounts {
-		if (common.StringContains(c.BankAccounts[x].SupportedExchanges, exchangeName) ||
+		if (strings.Contains(c.BankAccounts[x].SupportedExchanges, exchangeName) ||
 			c.BankAccounts[x].SupportedExchanges == "ALL") &&
-			common.StringContains(c.BankAccounts[x].SupportedCurrencies, targetCurrency) {
-			return c.BankAccounts[x], nil
-
+			strings.Contains(c.BankAccounts[x].SupportedCurrencies, targetCurrency) {
+			return &c.BankAccounts[x], nil
 		}
 	}
-	return BankAccount{}, fmt.Errorf("client banking details not found for %s and currency %s",
+	return nil, fmt.Errorf("client banking details not found for %s and currency %s",
 		exchangeName,
 		targetCurrency)
 }
 
 // UpdateClientBankAccounts updates the configuration for a bank
-func (c *Config) UpdateClientBankAccounts(bankCfg *BankAccount) error {
+func (c *Config) UpdateClientBankAccounts(bankCfg *banking.Account) error {
 	m.Lock()
 	defer m.Unlock()
 
@@ -356,56 +106,75 @@ func (c *Config) UpdateClientBankAccounts(bankCfg *BankAccount) error {
 }
 
 // CheckClientBankAccounts checks client bank details
-func (c *Config) CheckClientBankAccounts() error {
+func (c *Config) CheckClientBankAccounts() {
 	m.Lock()
 	defer m.Unlock()
 
 	if len(c.BankAccounts) == 0 {
 		c.BankAccounts = append(c.BankAccounts,
-			BankAccount{
-				BankName:            "test",
-				BankAddress:         "test",
-				AccountName:         "TestAccount",
+			banking.Account{
+				ID:                  "test-bank-01",
+				BankName:            "Test Bank",
+				BankAddress:         "42 Bank Street",
+				BankPostalCode:      "13337",
+				BankPostalCity:      "Satoshiville",
+				BankCountry:         "Japan",
+				AccountName:         "Satoshi Nakamoto",
 				AccountNumber:       "0234",
 				SWIFTCode:           "91272837",
 				IBAN:                "98218738671897",
 				SupportedCurrencies: "USD",
-				SupportedExchanges:  "ANX,Kraken",
+				SupportedExchanges:  "Kraken,Bitstamp",
 			},
 		)
-		return nil
+		return
 	}
 
 	for i := range c.BankAccounts {
 		if c.BankAccounts[i].Enabled {
-			if c.BankAccounts[i].BankName == "" || c.BankAccounts[i].BankAddress == "" {
-				return fmt.Errorf("banking details for %s is enabled but variables not set correctly",
-					c.BankAccounts[i].BankName)
-			}
-
-			if c.BankAccounts[i].AccountName == "" || c.BankAccounts[i].AccountNumber == "" {
-				return fmt.Errorf("banking account details for %s variables not set correctly",
-					c.BankAccounts[i].BankName)
-			}
-			if c.BankAccounts[i].IBAN == "" && c.BankAccounts[i].SWIFTCode == "" && c.BankAccounts[i].BSBNumber == "" {
-				return fmt.Errorf("critical banking numbers not set for %s in %s account",
-					c.BankAccounts[i].BankName,
-					c.BankAccounts[i].AccountName)
-			}
-
-			if c.BankAccounts[i].SupportedExchanges == "" {
-				c.BankAccounts[i].SupportedExchanges = "ALL"
+			err := c.BankAccounts[i].Validate()
+			if err != nil {
+				c.BankAccounts[i].Enabled = false
+				log.Warn(log.ConfigMgr, err.Error())
 			}
 		}
 	}
-	return nil
+}
+
+// PurgeExchangeAPICredentials purges the stored API credentials
+func (c *Config) PurgeExchangeAPICredentials() {
+	m.Lock()
+	defer m.Unlock()
+	for x := range c.Exchanges {
+		if !c.Exchanges[x].API.AuthenticatedSupport && !c.Exchanges[x].API.AuthenticatedWebsocketSupport {
+			continue
+		}
+		c.Exchanges[x].API.AuthenticatedSupport = false
+		c.Exchanges[x].API.AuthenticatedWebsocketSupport = false
+
+		if c.Exchanges[x].API.CredentialsValidator.RequiresKey {
+			c.Exchanges[x].API.Credentials.Key = DefaultAPIKey
+		}
+
+		if c.Exchanges[x].API.CredentialsValidator.RequiresSecret {
+			c.Exchanges[x].API.Credentials.Secret = DefaultAPISecret
+		}
+
+		if c.Exchanges[x].API.CredentialsValidator.RequiresClientID {
+			c.Exchanges[x].API.Credentials.ClientID = DefaultAPIClientID
+		}
+
+		c.Exchanges[x].API.Credentials.PEMKey = ""
+		c.Exchanges[x].API.Credentials.OTPSecret = ""
+	}
 }
 
 // GetCommunicationsConfig returns the communications configuration
 func (c *Config) GetCommunicationsConfig() CommunicationsConfig {
 	m.Lock()
-	defer m.Unlock()
-	return c.Communications
+	comms := c.Communications
+	m.Unlock()
+	return comms
 }
 
 // UpdateCommunicationsConfig sets a new updated version of a Communications
@@ -419,8 +188,9 @@ func (c *Config) UpdateCommunicationsConfig(config *CommunicationsConfig) {
 // GetCryptocurrencyProviderConfig returns the communications configuration
 func (c *Config) GetCryptocurrencyProviderConfig() CryptocurrencyProvider {
 	m.Lock()
-	defer m.Unlock()
-	return c.Currency.CryptocurrencyProvider
+	provider := c.Currency.CryptocurrencyProvider
+	m.Unlock()
+	return provider
 }
 
 // UpdateCryptocurrencyProviderConfig returns the communications configuration
@@ -463,6 +233,7 @@ func (c *Config) CheckCommunicationsConfig() {
 			} else {
 				c.Communications.SMSGlobalConfig = SMSGlobalConfig{
 					Name:     "SMSGlobal",
+					From:     c.Name,
 					Username: "main",
 					Password: "test",
 
@@ -490,8 +261,16 @@ func (c *Config) CheckCommunicationsConfig() {
 				},
 			}
 		}
-
 	} else {
+		if c.Communications.SMSGlobalConfig.From == "" {
+			c.Communications.SMSGlobalConfig.From = c.Name
+		}
+
+		if len(c.Communications.SMSGlobalConfig.From) > 11 {
+			log.Warnf(log.ConfigMgr, "SMSGlobal config supplied from name exceeds 11 characters, trimming.\n")
+			c.Communications.SMSGlobalConfig.From = c.Communications.SMSGlobalConfig.From[:11]
+		}
+
 		if c.SMS != nil {
 			// flush old SMS config
 			c.SMS = nil
@@ -520,14 +299,14 @@ func (c *Config) CheckCommunicationsConfig() {
 		c.Communications.SMSGlobalConfig.Name != "SMSGlobal" ||
 		c.Communications.SMTPConfig.Name != "SMTP" ||
 		c.Communications.TelegramConfig.Name != "Telegram" {
-		log.Warn("Communications config name/s not set correctly")
+		log.Warnln(log.ConfigMgr, "Communications config name/s not set correctly")
 	}
 	if c.Communications.SlackConfig.Enabled {
 		if c.Communications.SlackConfig.TargetChannel == "" ||
 			c.Communications.SlackConfig.VerificationToken == "" ||
 			c.Communications.SlackConfig.VerificationToken == "testtest" {
 			c.Communications.SlackConfig.Enabled = false
-			log.Warn("Slack enabled in config but variable data not set, disabling.")
+			log.Warnln(log.ConfigMgr, "Slack enabled in config but variable data not set, disabling.")
 		}
 	}
 	if c.Communications.SMSGlobalConfig.Enabled {
@@ -535,7 +314,7 @@ func (c *Config) CheckCommunicationsConfig() {
 			c.Communications.SMSGlobalConfig.Password == "" ||
 			len(c.Communications.SMSGlobalConfig.Contacts) == 0 {
 			c.Communications.SMSGlobalConfig.Enabled = false
-			log.Warn("SMSGlobal enabled in config but variable data not set, disabling.")
+			log.Warnln(log.ConfigMgr, "SMSGlobal enabled in config but variable data not set, disabling.")
 		}
 	}
 	if c.Communications.SMTPConfig.Enabled {
@@ -544,43 +323,77 @@ func (c *Config) CheckCommunicationsConfig() {
 			c.Communications.SMTPConfig.AccountName == "" ||
 			c.Communications.SMTPConfig.AccountPassword == "" {
 			c.Communications.SMTPConfig.Enabled = false
-			log.Warn("SMTP enabled in config but variable data not set, disabling.")
+			log.Warnln(log.ConfigMgr, "SMTP enabled in config but variable data not set, disabling.")
 		}
 	}
 	if c.Communications.TelegramConfig.Enabled {
 		if c.Communications.TelegramConfig.VerificationToken == "" {
 			c.Communications.TelegramConfig.Enabled = false
-			log.Warn("Telegram enabled in config but variable data not set, disabling.")
+			log.Warnln(log.ConfigMgr, "Telegram enabled in config but variable data not set, disabling.")
 		}
 	}
 }
 
-// CheckPairConsistency checks to see if the enabled pair exists in the
-// available pairs list
-func (c *Config) CheckPairConsistency(exchName string) error {
-	enabledPairs, err := c.GetEnabledPairs(exchName)
+// GetExchangeAssetTypes returns the exchanges supported asset types
+func (c *Config) GetExchangeAssetTypes(exchName string) (asset.Items, error) {
+	exchCfg, err := c.GetExchangeConfig(exchName)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	availPairs, err := c.GetAvailablePairs(exchName)
-	if err != nil {
-		return err
+	if exchCfg.CurrencyPairs == nil {
+		return nil, fmt.Errorf("exchange %s currency pairs is nil", exchName)
 	}
 
-	var pairs, pairsRemoved currency.Pairs
-	update := false
-	for x := range enabledPairs {
-		if !availPairs.Contains(enabledPairs[x], true) {
-			update = true
-			pairsRemoved = append(pairsRemoved, enabledPairs[x])
-			continue
+	return exchCfg.CurrencyPairs.AssetTypes, nil
+}
+
+// SupportsExchangeAssetType returns whether or not the exchange supports the supplied asset type
+func (c *Config) SupportsExchangeAssetType(exchName string, assetType asset.Item) (bool, error) {
+	exchCfg, err := c.GetExchangeConfig(exchName)
+	if err != nil {
+		return false, err
+	}
+
+	if exchCfg.CurrencyPairs == nil {
+		return false, fmt.Errorf("exchange %s currency pairs is nil", exchName)
+	}
+
+	if !asset.IsValid(assetType) {
+		return false, fmt.Errorf("exchange %s invalid asset types", exchName)
+	}
+
+	return exchCfg.CurrencyPairs.AssetTypes.Contains(assetType), nil
+}
+
+// CheckExchangeAssetsConsistency checks the exchanges supported assets compared to the stored
+// entries and removes any non supported
+func (c *Config) CheckExchangeAssetsConsistency(exchName string) {
+	exchCfg, err := c.GetExchangeConfig(exchName)
+	if err != nil {
+		return
+	}
+
+	exchangeAssetTypes, err := c.GetExchangeAssetTypes(exchName)
+	if err != nil {
+		return
+	}
+
+	storedAssetTypes := exchCfg.CurrencyPairs.GetAssetTypes()
+	for x := range storedAssetTypes {
+		if !exchangeAssetTypes.Contains(storedAssetTypes[x]) {
+			log.Warnf(log.ConfigMgr,
+				"%s has non-needed stored asset type %v. Removing..\n",
+				exchName, storedAssetTypes[x])
+			exchCfg.CurrencyPairs.Delete(storedAssetTypes[x])
 		}
-		pairs = append(pairs, enabledPairs[x])
 	}
+}
 
-	if !update {
-		return nil
+// SetPairs sets the exchanges currency pairs
+func (c *Config) SetPairs(exchName string, assetType asset.Item, enabled bool, pairs currency.Pairs) error {
+	if len(pairs) == 0 {
+		return fmt.Errorf("pairs is nil")
 	}
 
 	exchCfg, err := c.GetExchangeConfig(exchName)
@@ -588,59 +401,241 @@ func (c *Config) CheckPairConsistency(exchName string) error {
 		return err
 	}
 
-	if len(pairs) == 0 {
-		exchCfg.EnabledPairs = append(exchCfg.EnabledPairs,
-			availPairs.GetRandomPair())
-		log.Debugf("Exchange %s: No enabled pairs found in available pairs, randomly added %v\n",
-			exchName,
-			exchCfg.EnabledPairs)
-	} else {
-		exchCfg.EnabledPairs = pairs
-	}
-
-	err = c.UpdateExchangeConfig(&exchCfg)
+	supports, err := c.SupportsExchangeAssetType(exchName, assetType)
 	if err != nil {
 		return err
 	}
 
-	log.Debugf("Exchange %s: Removing enabled pair(s) %v from enabled pairs as it isn't an available pair",
-		exchName,
-		pairsRemoved.Strings())
+	if !supports {
+		return fmt.Errorf("exchange %s does not support asset type %v", exchName, assetType)
+	}
+
+	exchCfg.CurrencyPairs.StorePairs(assetType, pairs, enabled)
+	return nil
+}
+
+// GetCurrencyPairConfig returns currency pair config for the desired exchange and asset type
+func (c *Config) GetCurrencyPairConfig(exchName string, assetType asset.Item) (*currency.PairStore, error) {
+	exchCfg, err := c.GetExchangeConfig(exchName)
+	if err != nil {
+		return nil, err
+	}
+
+	supports, err := c.SupportsExchangeAssetType(exchName, assetType)
+	if err != nil {
+		return nil, err
+	}
+
+	if !supports {
+		return nil, fmt.Errorf("exchange %s does not support asset type %v", exchName, assetType)
+	}
+
+	return exchCfg.CurrencyPairs.Get(assetType), nil
+}
+
+// CheckPairConfigFormats checks to see if the pair config format is valid
+func (c *Config) CheckPairConfigFormats(exchName string) error {
+	assetTypes, err := c.GetExchangeAssetTypes(exchName)
+	if err != nil {
+		return err
+	}
+
+	for x := range assetTypes {
+		assetType := assetTypes[x]
+		pairFmt, err := c.GetPairFormat(exchName, assetType)
+		if err != nil {
+			return err
+		}
+
+		// No err checking is required as the above checks the same
+		// conditions
+		pairs, _ := c.GetCurrencyPairConfig(exchName, assetType)
+
+		if len(pairs.Available) == 0 || len(pairs.Enabled) == 0 {
+			continue
+		}
+
+		checker := func(enabled bool) error {
+			pairsType := "enabled"
+			loadedPairs := pairs.Enabled
+			if !enabled {
+				pairsType = "available"
+				loadedPairs = pairs.Available
+			}
+
+			for y := range loadedPairs {
+				if pairFmt.Delimiter != "" && pairFmt.Index != "" {
+					return fmt.Errorf(
+						"exchange %s %s %s cannot have an index and delimiter set at the same time",
+						exchName, pairsType, assetType)
+				}
+				if pairFmt.Delimiter != "" {
+					if !strings.Contains(loadedPairs[y].String(), pairFmt.Delimiter) {
+						return fmt.Errorf(
+							"exchange %s %s %s pairs does not contain delimiter",
+							exchName, pairsType, assetType)
+					}
+				}
+				if pairFmt.Index != "" {
+					if !strings.Contains(loadedPairs[y].String(), pairFmt.Index) {
+						return fmt.Errorf("exchange %s %s %s pairs does not contain an index",
+							exchName, pairsType, assetType)
+					}
+				}
+			}
+			return nil
+		}
+
+		err = checker(true)
+		if err != nil {
+			return err
+		}
+
+		err = checker(false)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// CheckPairConsistency checks to see if the enabled pair exists in the
+// available pairs list
+func (c *Config) CheckPairConsistency(exchName string) error {
+	assetTypes, err := c.GetExchangeAssetTypes(exchName)
+	if err != nil {
+		return err
+	}
+
+	for x := range assetTypes {
+		enabledPairs, err := c.GetEnabledPairs(exchName, assetTypes[x])
+		if err != nil {
+			return err
+		}
+
+		availPairs, _ := c.GetAvailablePairs(exchName, assetTypes[x])
+		if len(availPairs) == 0 {
+			continue
+		}
+
+		var pairs, pairsRemoved currency.Pairs
+		update := false
+
+		if len(enabledPairs) > 0 {
+			for x := range enabledPairs {
+				if !availPairs.Contains(enabledPairs[x], true) {
+					update = true
+					pairsRemoved = append(pairsRemoved, enabledPairs[x])
+					continue
+				}
+				pairs = append(pairs, enabledPairs[x])
+			}
+		} else {
+			update = true
+		}
+
+		if !update {
+			continue
+		}
+
+		if len(pairs) == 0 || len(enabledPairs) == 0 {
+			newPair := availPairs.GetRandomPair()
+			c.SetPairs(exchName, assetTypes[x], true, currency.Pairs{newPair})
+			log.Warnf(log.ExchangeSys, "Exchange %s: [%v] No enabled pairs found in available pairs, randomly added %v pair.\n",
+				exchName, assetTypes[x], newPair)
+			continue
+		} else {
+			c.SetPairs(exchName, assetTypes[x], true, pairs)
+		}
+		log.Warnf(log.ExchangeSys, "Exchange %s: [%v] Removing enabled pair(s) %v from enabled pairs as it isn't an available pair.\n",
+			exchName, assetTypes[x], pairsRemoved.Strings())
+	}
 	return nil
 }
 
 // SupportsPair returns true or not whether the exchange supports the supplied
 // pair
-func (c *Config) SupportsPair(exchName string, p currency.Pair) (bool, error) {
-	pairs, err := c.GetAvailablePairs(exchName)
+func (c *Config) SupportsPair(exchName string, p currency.Pair, assetType asset.Item) (bool, error) {
+	pairs, err := c.GetAvailablePairs(exchName, assetType)
 	if err != nil {
 		return false, err
 	}
 	return pairs.Contains(p, false), nil
 }
 
+// GetPairFormat returns the exchanges pair config storage format
+func (c *Config) GetPairFormat(exchName string, assetType asset.Item) (currency.PairFormat, error) {
+	exchCfg, err := c.GetExchangeConfig(exchName)
+	if err != nil {
+		return currency.PairFormat{}, err
+	}
+
+	supports, err := c.SupportsExchangeAssetType(exchName, assetType)
+	if err != nil {
+		return currency.PairFormat{}, err
+	}
+
+	if !supports {
+		return currency.PairFormat{},
+			fmt.Errorf("exchange %s does not support asset type %s", exchName,
+				assetType)
+	}
+
+	if exchCfg.CurrencyPairs.UseGlobalFormat {
+		return *exchCfg.CurrencyPairs.ConfigFormat, nil
+	}
+
+	p := exchCfg.CurrencyPairs.Get(assetType)
+	if p == nil {
+		return currency.PairFormat{},
+			fmt.Errorf("exchange %s pair store for asset type %s is nil", exchName,
+				assetType)
+	}
+
+	return *p.ConfigFormat, nil
+}
+
 // GetAvailablePairs returns a list of currency pairs for a specifc exchange
-func (c *Config) GetAvailablePairs(exchName string) (currency.Pairs, error) {
+func (c *Config) GetAvailablePairs(exchName string, assetType asset.Item) (currency.Pairs, error) {
 	exchCfg, err := c.GetExchangeConfig(exchName)
 	if err != nil {
 		return nil, err
 	}
 
-	return exchCfg.AvailablePairs.Format(exchCfg.ConfigCurrencyPairFormat.Delimiter,
-		exchCfg.ConfigCurrencyPairFormat.Index,
-		exchCfg.ConfigCurrencyPairFormat.Uppercase), nil
+	pairFormat, err := c.GetPairFormat(exchName, assetType)
+	if err != nil {
+		return nil, err
+	}
+
+	pairs := exchCfg.CurrencyPairs.GetPairs(assetType, false)
+	if pairs == nil {
+		return nil, nil
+	}
+
+	return pairs.Format(pairFormat.Delimiter, pairFormat.Index,
+		pairFormat.Uppercase), nil
 }
 
 // GetEnabledPairs returns a list of currency pairs for a specifc exchange
-func (c *Config) GetEnabledPairs(exchName string) (currency.Pairs, error) {
+func (c *Config) GetEnabledPairs(exchName string, assetType asset.Item) ([]currency.Pair, error) {
 	exchCfg, err := c.GetExchangeConfig(exchName)
 	if err != nil {
 		return nil, err
 	}
 
-	return exchCfg.EnabledPairs.Format(exchCfg.ConfigCurrencyPairFormat.Delimiter,
-		exchCfg.ConfigCurrencyPairFormat.Index,
-		exchCfg.ConfigCurrencyPairFormat.Uppercase), nil
+	pairFormat, err := c.GetPairFormat(exchName, assetType)
+	if err != nil {
+		return nil, err
+	}
+
+	pairs := exchCfg.CurrencyPairs.GetPairs(assetType, true)
+	if pairs == nil {
+		return nil, nil
+	}
+
+	return pairs.Format(pairFormat.Delimiter, pairFormat.Index,
+		pairFormat.Uppercase), nil
 }
 
 // GetEnabledExchanges returns a list of enabled exchanges
@@ -676,26 +671,6 @@ func (c *Config) CountEnabledExchanges() int {
 	return counter
 }
 
-// GetConfigCurrencyPairFormat returns the config currency pair format
-// for a specific exchange
-func (c *Config) GetConfigCurrencyPairFormat(exchName string) (*CurrencyPairFormatConfig, error) {
-	exchCfg, err := c.GetExchangeConfig(exchName)
-	if err != nil {
-		return nil, err
-	}
-	return exchCfg.ConfigCurrencyPairFormat, nil
-}
-
-// GetRequestCurrencyPairFormat returns the request currency pair format
-// for a specific exchange
-func (c *Config) GetRequestCurrencyPairFormat(exchName string) (*CurrencyPairFormatConfig, error) {
-	exchCfg, err := c.GetExchangeConfig(exchName)
-	if err != nil {
-		return nil, err
-	}
-	return exchCfg.RequestCurrencyPairFormat, nil
-}
-
 // GetCurrencyPairDisplayConfig retrieves the currency pair display preference
 func (c *Config) GetCurrencyPairDisplayConfig() *CurrencyPairFormatConfig {
 	return c.Currency.CurrencyPairFormat
@@ -704,24 +679,25 @@ func (c *Config) GetCurrencyPairDisplayConfig() *CurrencyPairFormatConfig {
 // GetAllExchangeConfigs returns all exchange configurations
 func (c *Config) GetAllExchangeConfigs() []ExchangeConfig {
 	m.Lock()
-	defer m.Unlock()
-	return c.Exchanges
+	configs := c.Exchanges
+	m.Unlock()
+	return configs
 }
 
 // GetExchangeConfig returns exchange configurations by its indivdual name
-func (c *Config) GetExchangeConfig(name string) (ExchangeConfig, error) {
+func (c *Config) GetExchangeConfig(name string) (*ExchangeConfig, error) {
 	m.Lock()
 	defer m.Unlock()
 	for i := range c.Exchanges {
 		if strings.EqualFold(c.Exchanges[i].Name, name) {
-			return c.Exchanges[i], nil
+			return &c.Exchanges[i], nil
 		}
 	}
-	return ExchangeConfig{}, fmt.Errorf(ErrExchangeNotFound, name)
+	return nil, fmt.Errorf(ErrExchangeNotFound, name)
 }
 
-// GetForexProviderConfig returns a forex provider configuration by its name
-func (c *Config) GetForexProviderConfig(name string) (base.Settings, error) {
+// GetForexProvider returns a forex provider configuration by its name
+func (c *Config) GetForexProvider(name string) (currency.FXSettings, error) {
 	m.Lock()
 	defer m.Unlock()
 	for i := range c.Currency.ForexProviders {
@@ -729,7 +705,15 @@ func (c *Config) GetForexProviderConfig(name string) (base.Settings, error) {
 			return c.Currency.ForexProviders[i], nil
 		}
 	}
-	return base.Settings{}, errors.New("provider not found")
+	return currency.FXSettings{}, errors.New("provider not found")
+}
+
+// GetForexProviders returns a list of available forex providers
+func (c *Config) GetForexProviders() []currency.FXSettings {
+	m.Lock()
+	fxProviders := c.Currency.ForexProviders
+	m.Unlock()
+	return fxProviders
 }
 
 // GetPrimaryForexProvider returns the primary forex provider
@@ -760,108 +744,209 @@ func (c *Config) UpdateExchangeConfig(e *ExchangeConfig) error {
 // CheckExchangeConfigValues returns configuation values for all enabled
 // exchanges
 func (c *Config) CheckExchangeConfigValues() error {
+	if len(c.Exchanges) == 0 {
+		return errors.New("no exchange configs found")
+	}
+
 	exchanges := 0
 	for i := range c.Exchanges {
 		if strings.EqualFold(c.Exchanges[i].Name, "GDAX") {
 			c.Exchanges[i].Name = "CoinbasePro"
 		}
 
-		if c.Exchanges[i].WebsocketURL != WebsocketURLNonDefaultMessage {
-			if c.Exchanges[i].WebsocketURL == "" {
-				c.Exchanges[i].WebsocketURL = WebsocketURLNonDefaultMessage
+		// Check to see if the old API storage format is used
+		if c.Exchanges[i].APIKey != nil {
+			// It is, migrate settings to new format
+			c.Exchanges[i].API.AuthenticatedSupport = *c.Exchanges[i].AuthenticatedAPISupport
+			if c.Exchanges[i].AuthenticatedWebsocketAPISupport != nil {
+				c.Exchanges[i].API.AuthenticatedWebsocketSupport = *c.Exchanges[i].AuthenticatedWebsocketAPISupport
+			}
+			c.Exchanges[i].API.Credentials.Key = *c.Exchanges[i].APIKey
+			c.Exchanges[i].API.Credentials.Secret = *c.Exchanges[i].APISecret
+
+			if c.Exchanges[i].APIAuthPEMKey != nil {
+				c.Exchanges[i].API.Credentials.PEMKey = *c.Exchanges[i].APIAuthPEMKey
+			}
+
+			if c.Exchanges[i].APIAuthPEMKeySupport != nil {
+				c.Exchanges[i].API.PEMKeySupport = *c.Exchanges[i].APIAuthPEMKeySupport
+			}
+
+			if c.Exchanges[i].ClientID != nil {
+				c.Exchanges[i].API.Credentials.ClientID = *c.Exchanges[i].ClientID
+			}
+
+			if c.Exchanges[i].WebsocketURL != nil {
+				c.Exchanges[i].API.Endpoints.WebsocketURL = *c.Exchanges[i].WebsocketURL
+			}
+
+			c.Exchanges[i].API.Endpoints.URL = *c.Exchanges[i].APIURL
+			c.Exchanges[i].API.Endpoints.URLSecondary = *c.Exchanges[i].APIURLSecondary
+
+			// Flush settings
+			c.Exchanges[i].AuthenticatedAPISupport = nil
+			c.Exchanges[i].AuthenticatedWebsocketAPISupport = nil
+			c.Exchanges[i].APIKey = nil
+			c.Exchanges[i].APISecret = nil
+			c.Exchanges[i].ClientID = nil
+			c.Exchanges[i].APIAuthPEMKeySupport = nil
+			c.Exchanges[i].APIAuthPEMKey = nil
+			c.Exchanges[i].APIURL = nil
+			c.Exchanges[i].APIURLSecondary = nil
+			c.Exchanges[i].WebsocketURL = nil
+		}
+
+		if c.Exchanges[i].Features == nil {
+			c.Exchanges[i].Features = &FeaturesConfig{}
+		}
+
+		if c.Exchanges[i].SupportsAutoPairUpdates != nil {
+			c.Exchanges[i].Features.Supports.RESTCapabilities.AutoPairUpdates = *c.Exchanges[i].SupportsAutoPairUpdates
+			c.Exchanges[i].Features.Enabled.AutoPairUpdates = *c.Exchanges[i].SupportsAutoPairUpdates
+			c.Exchanges[i].SupportsAutoPairUpdates = nil
+		}
+
+		if c.Exchanges[i].Websocket != nil {
+			c.Exchanges[i].Features.Enabled.Websocket = *c.Exchanges[i].Websocket
+			c.Exchanges[i].Websocket = nil
+		}
+
+		if c.Exchanges[i].API.Endpoints.URL != APIURLNonDefaultMessage {
+			if c.Exchanges[i].API.Endpoints.URL == "" {
+				// Set default if nothing set
+				c.Exchanges[i].API.Endpoints.URL = APIURLNonDefaultMessage
 			}
 		}
 
-		if c.Exchanges[i].APIURL != APIURLNonDefaultMessage {
-			if c.Exchanges[i].APIURL == "" {
+		if c.Exchanges[i].API.Endpoints.URLSecondary != APIURLNonDefaultMessage {
+			if c.Exchanges[i].API.Endpoints.URLSecondary == "" {
 				// Set default if nothing set
-				c.Exchanges[i].APIURL = APIURLNonDefaultMessage
+				c.Exchanges[i].API.Endpoints.URLSecondary = APIURLNonDefaultMessage
 			}
 		}
 
-		if c.Exchanges[i].APIURLSecondary != APIURLNonDefaultMessage {
-			if c.Exchanges[i].APIURLSecondary == "" {
-				// Set default if nothing set
-				c.Exchanges[i].APIURLSecondary = APIURLNonDefaultMessage
+		if c.Exchanges[i].API.Endpoints.WebsocketURL != WebsocketURLNonDefaultMessage {
+			if c.Exchanges[i].API.Endpoints.WebsocketURL == "" {
+				c.Exchanges[i].API.Endpoints.WebsocketURL = WebsocketURLNonDefaultMessage
 			}
+		}
+
+		// Check if see if the new currency pairs format is empty and flesh it out if so
+		if c.Exchanges[i].CurrencyPairs == nil {
+			c.Exchanges[i].CurrencyPairs = new(currency.PairsManager)
+			c.Exchanges[i].CurrencyPairs.Pairs = make(map[asset.Item]*currency.PairStore)
+
+			if c.Exchanges[i].PairsLastUpdated != nil {
+				c.Exchanges[i].CurrencyPairs.LastUpdated = *c.Exchanges[i].PairsLastUpdated
+			}
+
+			c.Exchanges[i].CurrencyPairs.ConfigFormat = c.Exchanges[i].ConfigCurrencyPairFormat
+			c.Exchanges[i].CurrencyPairs.RequestFormat = c.Exchanges[i].RequestCurrencyPairFormat
+
+			if c.Exchanges[i].AssetTypes == nil {
+				c.Exchanges[i].CurrencyPairs.AssetTypes = asset.Items{
+					asset.Spot,
+				}
+			} else {
+				c.Exchanges[i].CurrencyPairs.AssetTypes = asset.New(
+					strings.ToLower(*c.Exchanges[i].AssetTypes),
+				)
+			}
+
+			var availPairs, enabledPairs currency.Pairs
+			if c.Exchanges[i].AvailablePairs != nil {
+				availPairs = *c.Exchanges[i].AvailablePairs
+			}
+
+			if c.Exchanges[i].EnabledPairs != nil {
+				enabledPairs = *c.Exchanges[i].EnabledPairs
+			}
+
+			c.Exchanges[i].CurrencyPairs.UseGlobalFormat = true
+			c.Exchanges[i].CurrencyPairs.Store(asset.Spot,
+				currency.PairStore{
+					Available: availPairs,
+					Enabled:   enabledPairs,
+				},
+			)
+
+			// flush old values
+			c.Exchanges[i].PairsLastUpdated = nil
+			c.Exchanges[i].ConfigCurrencyPairFormat = nil
+			c.Exchanges[i].RequestCurrencyPairFormat = nil
+			c.Exchanges[i].AssetTypes = nil
+			c.Exchanges[i].AvailablePairs = nil
+			c.Exchanges[i].EnabledPairs = nil
 		}
 
 		if c.Exchanges[i].Enabled {
 			if c.Exchanges[i].Name == "" {
-				return fmt.Errorf(ErrExchangeNameEmpty, i)
+				log.Errorf(log.ConfigMgr, ErrExchangeNameEmpty, i)
+				c.Exchanges[i].Enabled = false
+				continue
 			}
-			if len(c.Exchanges[i].AvailablePairs) == 0 {
-				return fmt.Errorf(ErrExchangeAvailablePairsEmpty, c.Exchanges[i].Name)
-			}
-			if len(c.Exchanges[i].EnabledPairs) == 0 {
-				return fmt.Errorf(ErrExchangeEnabledPairsEmpty, c.Exchanges[i].Name)
-			}
-			if len(c.Exchanges[i].BaseCurrencies) == 0 {
-				return fmt.Errorf(ErrExchangeBaseCurrenciesEmpty, c.Exchanges[i].Name)
-			}
+			if (c.Exchanges[i].API.AuthenticatedSupport || c.Exchanges[i].API.AuthenticatedWebsocketSupport) && c.Exchanges[i].API.CredentialsValidator != nil {
+				var failed bool
+				if c.Exchanges[i].API.CredentialsValidator.RequiresKey && (c.Exchanges[i].API.Credentials.Key == "" || c.Exchanges[i].API.Credentials.Key == DefaultAPIKey) {
+					failed = true
+				}
 
-			var areAuthenticatedCredentialsValid bool
-			if c.Exchanges[i].AuthenticatedWebsocketAPISupport || c.Exchanges[i].AuthenticatedAPISupport {
-				areAuthenticatedCredentialsValid = c.areAuthenticatedCredentialsValid(i)
-			}
-			if c.Exchanges[i].AuthenticatedWebsocketAPISupport {
-				c.Exchanges[i].AuthenticatedWebsocketAPISupport = areAuthenticatedCredentialsValid
-			}
-			if c.Exchanges[i].AuthenticatedAPISupport {
-				c.Exchanges[i].AuthenticatedAPISupport = areAuthenticatedCredentialsValid
-			}
+				if c.Exchanges[i].API.CredentialsValidator.RequiresSecret && (c.Exchanges[i].API.Credentials.Secret == "" || c.Exchanges[i].API.Credentials.Secret == DefaultAPISecret) {
+					failed = true
+				}
 
-			if !c.Exchanges[i].SupportsAutoPairUpdates {
-				lastUpdated := common.UnixTimestampToTime(c.Exchanges[i].PairsLastUpdated)
-				lastUpdated = lastUpdated.AddDate(0, 0, configPairsLastUpdatedWarningThreshold)
-				if lastUpdated.Unix() <= time.Now().Unix() {
-					log.Warnf(WarningPairsLastUpdatedThresholdExceeded, c.Exchanges[i].Name, configPairsLastUpdatedWarningThreshold)
+				if c.Exchanges[i].API.CredentialsValidator.RequiresClientID && (c.Exchanges[i].API.Credentials.ClientID == DefaultAPIClientID || c.Exchanges[i].API.Credentials.ClientID == "") {
+					failed = true
+				}
+
+				if failed {
+					c.Exchanges[i].API.AuthenticatedSupport = false
+					c.Exchanges[i].API.AuthenticatedWebsocketSupport = false
+					log.Warnf(log.ExchangeSys, WarningExchangeAuthAPIDefaultOrEmptyValues, c.Exchanges[i].Name)
 				}
 			}
-
+			if !c.Exchanges[i].Features.Supports.RESTCapabilities.AutoPairUpdates && !c.Exchanges[i].Features.Supports.WebsocketCapabilities.AutoPairUpdates {
+				lastUpdated := convert.UnixTimestampToTime(c.Exchanges[i].CurrencyPairs.LastUpdated)
+				lastUpdated = lastUpdated.AddDate(0, 0, pairsLastUpdatedWarningThreshold)
+				if lastUpdated.Unix() <= time.Now().Unix() {
+					log.Warnf(log.ExchangeSys, WarningPairsLastUpdatedThresholdExceeded, c.Exchanges[i].Name, pairsLastUpdatedWarningThreshold)
+				}
+			}
 			if c.Exchanges[i].HTTPTimeout <= 0 {
-				log.Warnf("Exchange %s HTTP Timeout value not set, defaulting to %v.", c.Exchanges[i].Name, configDefaultHTTPTimeout)
-				c.Exchanges[i].HTTPTimeout = configDefaultHTTPTimeout
+				log.Warnf(log.ExchangeSys, "Exchange %s HTTP Timeout value not set, defaulting to %v.\n", c.Exchanges[i].Name, defaultHTTPTimeout)
+				c.Exchanges[i].HTTPTimeout = defaultHTTPTimeout
 			}
 
+			if c.Exchanges[i].WebsocketResponseCheckTimeout <= 0 {
+				log.Warnf(log.ExchangeSys, "Exchange %s Websocket response check timeout value not set, defaulting to %v.",
+					c.Exchanges[i].Name, defaultWebsocketResponseCheckTimeout)
+				c.Exchanges[i].WebsocketResponseCheckTimeout = defaultWebsocketResponseCheckTimeout
+			}
+
+			if c.Exchanges[i].WebsocketResponseMaxLimit <= 0 {
+				log.Warnf(log.ExchangeSys, "Exchange %s Websocket response max limit value not set, defaulting to %v.",
+					c.Exchanges[i].Name, defaultWebsocketResponseMaxLimit)
+				c.Exchanges[i].WebsocketResponseMaxLimit = defaultWebsocketResponseMaxLimit
+			}
+			if c.Exchanges[i].WebsocketTrafficTimeout <= 0 {
+				log.Warnf(log.ExchangeSys, "Exchange %s Websocket response traffic timeout value not set, defaulting to %v.",
+					c.Exchanges[i].Name, defaultWebsocketTrafficTimeout)
+				c.Exchanges[i].WebsocketTrafficTimeout = defaultWebsocketTrafficTimeout
+			}
+			if c.Exchanges[i].WebsocketOrderbookBufferLimit <= 0 {
+				log.Warnf(log.ExchangeSys, "Exchange %s Websocket orderbook buffer limit value not set, defaulting to %v.",
+					c.Exchanges[i].Name, defaultWebsocketOrderbookBufferLimit)
+				c.Exchanges[i].WebsocketOrderbookBufferLimit = defaultWebsocketOrderbookBufferLimit
+			}
 			err := c.CheckPairConsistency(c.Exchanges[i].Name)
 			if err != nil {
-				log.Errorf("Exchange %s: CheckPairConsistency error: %s", c.Exchanges[i].Name, err)
+				log.Errorf(log.ExchangeSys, "Exchange %s: CheckPairConsistency error: %s\n", c.Exchanges[i].Name, err)
+				c.Exchanges[i].Enabled = false
+				continue
 			}
 
-			if len(c.Exchanges[i].BankAccounts) == 0 {
-				c.Exchanges[i].BankAccounts = append(c.Exchanges[i].BankAccounts, BankAccount{})
-			} else {
-				for y := range c.Exchanges[i].BankAccounts {
-					bankAccount := &c.Exchanges[i].BankAccounts[y]
-					if bankAccount.Enabled {
-						if bankAccount.BankName == "" || bankAccount.BankAddress == "" {
-							log.Warnf("banking details for %s is enabled but variables not set",
-								c.Exchanges[i].Name)
-							bankAccount.Enabled = false
-						}
+			c.CheckExchangeAssetsConsistency(c.Exchanges[i].Name)
 
-						if bankAccount.AccountName == "" || bankAccount.AccountNumber == "" {
-							log.Warnf("banking account details for %s variables not set",
-								c.Exchanges[i].Name)
-							bankAccount.Enabled = false
-						}
-
-						if bankAccount.SupportedCurrencies == "" {
-							log.Warnf("banking account details for %s acceptable funding currencies not set",
-								c.Exchanges[i].Name)
-							bankAccount.Enabled = false
-						}
-
-						if bankAccount.BSBNumber == "" && bankAccount.IBAN == "" &&
-							bankAccount.SWIFTCode == "" {
-							log.Warnf("banking account details for %s critical banking numbers not set",
-								c.Exchanges[i].Name)
-							bankAccount.Enabled = false
-						}
-					}
-				}
-			}
 			exchanges++
 		}
 	}
@@ -871,82 +956,30 @@ func (c *Config) CheckExchangeConfigValues() error {
 	return nil
 }
 
-func (c *Config) areAuthenticatedCredentialsValid(i int) bool {
-	if c.Exchanges == nil {
-		log.Error("Config: Failed to check exchange authenticated credentials due to c.Exchanges not setup")
-		return false
+// CheckBankAccountConfig checks all bank accounts to see if they are valid
+func (c *Config) CheckBankAccountConfig() {
+	for x := range c.BankAccounts {
+		if c.BankAccounts[x].Enabled {
+			err := c.BankAccounts[x].Validate()
+			if err != nil {
+				c.BankAccounts[x].Enabled = false
+				log.Warn(log.ConfigMgr, err.Error())
+			}
+		}
 	}
-	if i < 0 || c.Exchanges == nil || len(c.Exchanges) < i {
-		log.Error("Config: Failed to check exchange authenticated credentials due to invalid index")
-		return false
-	}
-
-	resp := true
-	if c.Exchanges[i].APIKey == "" || c.Exchanges[i].APIKey == DefaultUnsetAPIKey {
-		resp = false
-	}
-
-	if (c.Exchanges[i].APISecret == "" || c.Exchanges[i].APISecret == DefaultUnsetAPISecret) &&
-		c.Exchanges[i].Name != "COINUT" {
-		resp = false
-	}
-
-	if (c.Exchanges[i].ClientID == "ClientID" || c.Exchanges[i].ClientID == "") &&
-		(c.Exchanges[i].Name == "ITBIT" || c.Exchanges[i].Name == "Bitstamp" || c.Exchanges[i].Name == "COINUT" || c.Exchanges[i].Name == "CoinbasePro") {
-		resp = false
-	}
-	// non-fatal error
-	if !resp {
-		log.Warnf(WarningExchangeAuthAPIDefaultOrEmptyValues, c.Exchanges[i].Name)
-	}
-	return resp
-}
-
-// CheckWebserverConfigValues checks information before webserver starts and
-// returns an error if values are incorrect.
-func (c *Config) CheckWebserverConfigValues() error {
-	if c.Webserver.AdminUsername == "" || c.Webserver.AdminPassword == "" {
-		return errors.New(WarningWebserverCredentialValuesEmpty)
-	}
-
-	if !common.StringContains(c.Webserver.ListenAddress, ":") {
-		return errors.New(WarningWebserverListenAddressInvalid)
-	}
-
-	portStr := common.SplitStrings(c.Webserver.ListenAddress, ":")[1]
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		return errors.New(WarningWebserverListenAddressInvalid)
-	}
-
-	if port < 1 || port > 65355 {
-		return errors.New(WarningWebserverListenAddressInvalid)
-	}
-
-	if c.Webserver.WebsocketConnectionLimit <= 0 {
-		c.Webserver.WebsocketConnectionLimit = 1
-	}
-
-	if c.Webserver.WebsocketMaxAuthFailures <= 0 {
-		c.Webserver.WebsocketMaxAuthFailures = 3
-	}
-
-	return nil
+	banking.Accounts = c.BankAccounts
 }
 
 // CheckCurrencyConfigValues checks to see if the currency config values are correct or not
 func (c *Config) CheckCurrencyConfigValues() error {
-	fxProviders := forexprovider.GetAvailableForexProviders()
-	if len(fxProviders) == 0 {
-		return errors.New("no forex providers available")
-	}
+	fxProviders := forexprovider.GetSupportedForexProviders()
 
 	if len(fxProviders) != len(c.Currency.ForexProviders) {
 		for x := range fxProviders {
-			_, err := c.GetForexProviderConfig(fxProviders[x])
+			_, err := c.GetForexProvider(fxProviders[x])
 			if err != nil {
-				log.Warnf("%s forex provider not found, adding to config..", fxProviders[x])
-				c.Currency.ForexProviders = append(c.Currency.ForexProviders, base.Settings{
+				log.Warnf(log.Global, "%s forex provider not found, adding to config..\n", fxProviders[x])
+				c.Currency.ForexProviders = append(c.Currency.ForexProviders, currency.FXSettings{
 					Name:             fxProviders[x],
 					RESTPollingDelay: 600,
 					APIKey:           DefaultUnsetAPIKey,
@@ -959,29 +992,27 @@ func (c *Config) CheckCurrencyConfigValues() error {
 	count := 0
 	for i := range c.Currency.ForexProviders {
 		if c.Currency.ForexProviders[i].Enabled {
-			if c.Currency.ForexProviders[i].APIKey == DefaultUnsetAPIKey && c.Currency.ForexProviders[i].Name != DefaultForexProviderExchangeRatesAPI {
-				log.Warnf("%s enabled forex provider API key not set. Please set this in your config.json file", c.Currency.ForexProviders[i].Name)
+			if c.Currency.ForexProviders[i].Name == "CurrencyConverter" &&
+				c.Currency.ForexProviders[i].PrimaryProvider &&
+				(c.Currency.ForexProviders[i].APIKey == "" ||
+					c.Currency.ForexProviders[i].APIKey == DefaultUnsetAPIKey) {
+				log.Warnln(log.Global, "CurrencyConverter forex provider no longer supports unset API key requests. Switching to ExchangeRates FX provider..")
+				c.Currency.ForexProviders[i].Enabled = false
+				c.Currency.ForexProviders[i].PrimaryProvider = false
+				c.Currency.ForexProviders[i].APIKey = DefaultUnsetAPIKey
+				c.Currency.ForexProviders[i].APIKeyLvl = -1
+				continue
+			}
+			if c.Currency.ForexProviders[i].APIKey == DefaultUnsetAPIKey &&
+				c.Currency.ForexProviders[i].Name != DefaultForexProviderExchangeRatesAPI {
+				log.Warnf(log.Global, "%s enabled forex provider API key not set. Please set this in your config.json file\n", c.Currency.ForexProviders[i].Name)
 				c.Currency.ForexProviders[i].Enabled = false
 				c.Currency.ForexProviders[i].PrimaryProvider = false
 				continue
 			}
 
-			if c.Currency.ForexProviders[i].Name == "CurrencyConverter" {
-				if c.Currency.ForexProviders[i].Enabled &&
-					c.Currency.ForexProviders[i].PrimaryProvider &&
-					(c.Currency.ForexProviders[i].APIKey == "" ||
-						c.Currency.ForexProviders[i].APIKey == DefaultUnsetAPIKey) {
-					log.Warnf("CurrencyConverter forex provider no longer supports unset API key requests. Switching to ExchangeRates FX provider..")
-					c.Currency.ForexProviders[i].Enabled = false
-					c.Currency.ForexProviders[i].PrimaryProvider = false
-					c.Currency.ForexProviders[i].APIKey = DefaultUnsetAPIKey
-					c.Currency.ForexProviders[i].APIKeyLvl = -1
-					continue
-				}
-			}
-
 			if c.Currency.ForexProviders[i].APIKeyLvl == -1 && c.Currency.ForexProviders[i].Name != DefaultForexProviderExchangeRatesAPI {
-				log.Warnf("%s APIKey Level not set, functions limited. Please set this in your config.json file",
+				log.Warnf(log.Global, "%s APIKey Level not set, functions limited. Please set this in your config.json file\n",
 					c.Currency.ForexProviders[i].Name)
 			}
 			count++
@@ -993,7 +1024,7 @@ func (c *Config) CheckCurrencyConfigValues() error {
 			if c.Currency.ForexProviders[x].Name == DefaultForexProviderExchangeRatesAPI {
 				c.Currency.ForexProviders[x].Enabled = true
 				c.Currency.ForexProviders[x].PrimaryProvider = true
-				log.Warn("Using ExchangeRatesAPI for default forex provider.")
+				log.Warnln(log.ConfigMgr, "Using ExchangeRatesAPI for default forex provider.")
 			}
 		}
 	}
@@ -1009,11 +1040,11 @@ func (c *Config) CheckCurrencyConfigValues() error {
 	if c.Currency.CryptocurrencyProvider.Enabled {
 		if c.Currency.CryptocurrencyProvider.APIkey == "" ||
 			c.Currency.CryptocurrencyProvider.APIkey == DefaultUnsetAPIKey {
-			log.Warnf("CryptocurrencyProvider enabled but api key is unset please set this in your config.json file")
+			log.Warnln(log.ConfigMgr, "CryptocurrencyProvider enabled but api key is unset please set this in your config.json file")
 		}
 		if c.Currency.CryptocurrencyProvider.AccountPlan == "" ||
 			c.Currency.CryptocurrencyProvider.AccountPlan == DefaultUnsetAccountPlan {
-			log.Warnf("CryptocurrencyProvider enabled but account plan is unset please set this in your config.json file")
+			log.Warnln(log.ConfigMgr, "CryptocurrencyProvider enabled but account plan is unset please set this in your config.json file")
 		}
 	} else {
 		if c.Currency.CryptocurrencyProvider.APIkey == "" {
@@ -1025,8 +1056,8 @@ func (c *Config) CheckCurrencyConfigValues() error {
 	}
 
 	if c.Currency.Cryptocurrencies.Join() == "" {
-		if c.Cryptocurrencies.Join() != "" {
-			c.Currency.Cryptocurrencies = c.Cryptocurrencies
+		if c.Cryptocurrencies != nil {
+			c.Currency.Cryptocurrencies = *c.Cryptocurrencies
 			c.Cryptocurrencies = nil
 		} else {
 			c.Currency.Cryptocurrencies = currency.GetDefaultCryptocurrencies()
@@ -1046,24 +1077,35 @@ func (c *Config) CheckCurrencyConfigValues() error {
 	}
 
 	if c.Currency.FiatDisplayCurrency.IsEmpty() {
-		if c.FiatDisplayCurrency.IsEmpty() {
-			c.Currency.FiatDisplayCurrency = c.FiatDisplayCurrency
-			c.FiatDisplayCurrency = currency.NewCode("")
+		if c.FiatDisplayCurrency != nil {
+			c.Currency.FiatDisplayCurrency = *c.FiatDisplayCurrency
+			c.FiatDisplayCurrency = nil
 		} else {
 			c.Currency.FiatDisplayCurrency = currency.USD
 		}
 	}
+
+	// Flush old setting which still exists
+	if c.FiatDisplayCurrency != nil {
+		c.FiatDisplayCurrency = nil
+	}
+
 	return nil
 }
 
 // RetrieveConfigCurrencyPairs splits, assigns and verifies enabled currency
 // pairs either cryptoCurrencies or fiatCurrencies
-func (c *Config) RetrieveConfigCurrencyPairs(enabledOnly bool) error {
+func (c *Config) RetrieveConfigCurrencyPairs(enabledOnly bool, assetType asset.Item) error {
 	cryptoCurrencies := c.Currency.Cryptocurrencies
 	fiatCurrencies := currency.GetFiatCurrencies()
 
 	for x := range c.Exchanges {
 		if !c.Exchanges[x].Enabled && enabledOnly {
+			continue
+		}
+
+		supports, _ := c.SupportsExchangeAssetType(c.Exchanges[x].Name, assetType)
+		if !supports {
 			continue
 		}
 
@@ -1076,12 +1118,17 @@ func (c *Config) RetrieveConfigCurrencyPairs(enabledOnly bool) error {
 	}
 
 	for x := range c.Exchanges {
+		supports, _ := c.SupportsExchangeAssetType(c.Exchanges[x].Name, assetType)
+		if !supports {
+			continue
+		}
+
 		var pairs []currency.Pair
 		var err error
 		if !c.Exchanges[x].Enabled && enabledOnly {
-			pairs, err = c.GetEnabledPairs(c.Exchanges[x].Name)
+			pairs, err = c.GetEnabledPairs(c.Exchanges[x].Name, assetType)
 		} else {
-			pairs, err = c.GetAvailablePairs(c.Exchanges[x].Name)
+			pairs, err = c.GetAvailablePairs(c.Exchanges[x].Name, assetType)
 		}
 
 		if err != nil {
@@ -1112,35 +1159,94 @@ func (c *Config) CheckLoggerConfig() error {
 	m.Lock()
 	defer m.Unlock()
 
-	// check if enabled is nil or level is a blank string
-	if c.Logging.Enabled == nil || c.Logging.Level == "" {
-		// Creates a new pointer to bool and sets it as true
-		t := func(t bool) *bool { return &t }(true)
-
-		log.Warn("Missing or invalid config settings using safe defaults")
-
-		// Set logger to safe defaults
-
-		c.Logging = log.Logging{
-			Enabled:      t,
-			Level:        "DEBUG|INFO|WARN|ERROR|FATAL",
-			ColourOutput: false,
-			File:         "debug.txt",
-			Rotate:       false,
-		}
-		log.Logger = &c.Logging
-	} else {
-		log.Logger = &c.Logging
+	if c.Logging.Enabled == nil || c.Logging.Output == "" {
+		c.Logging = log.GenDefaultSettings()
 	}
 
-	if len(c.Logging.File) > 0 {
-		logPath := filepath.Join(common.GetDefaultDataDir(runtime.GOOS), "logs")
-		err := common.CreateDir(logPath)
+	if c.Logging.AdvancedSettings.ShowLogSystemName == nil {
+		c.Logging.AdvancedSettings.ShowLogSystemName = convert.BoolPtr(false)
+	}
+
+	if c.Logging.LoggerFileConfig != nil {
+		if c.Logging.LoggerFileConfig.FileName == "" {
+			c.Logging.LoggerFileConfig.FileName = "log.txt"
+		}
+		if c.Logging.LoggerFileConfig.Rotate == nil {
+			c.Logging.LoggerFileConfig.Rotate = convert.BoolPtr(false)
+		}
+		if c.Logging.LoggerFileConfig.MaxSize <= 0 {
+			log.Warnf(log.Global, "Logger rotation size invalid, defaulting to %v", log.DefaultMaxFileSize)
+			c.Logging.LoggerFileConfig.MaxSize = log.DefaultMaxFileSize
+		}
+		log.FileLoggingConfiguredCorrectly = true
+	}
+	log.RWM.Lock()
+	log.GlobalLogConfig = &c.Logging
+	log.RWM.Unlock()
+
+	logPath := filepath.Join(common.GetDefaultDataDir(runtime.GOOS), "logs")
+	err := common.CreateDir(logPath)
+	if err != nil {
+		return err
+	}
+	log.LogPath = logPath
+
+	return nil
+}
+
+func (c *Config) checkGCTScriptConfig() error {
+	m.Lock()
+	defer m.Unlock()
+
+	if c.GCTScript.ScriptTimeout <= 0 {
+		c.GCTScript.ScriptTimeout = gctscript.DefaultTimeoutValue
+	}
+
+	if c.GCTScript.MaxVirtualMachines == 0 {
+		c.GCTScript.MaxVirtualMachines = gctscript.DefaultMaxVirtualMachines
+	}
+
+	scriptPath := filepath.Join(common.GetDefaultDataDir(runtime.GOOS), "scripts")
+	err := common.CreateDir(scriptPath)
+	if err != nil {
+		return err
+	}
+
+	gctscript.ScriptPath = scriptPath
+	gctscript.GCTScriptConfig = &c.GCTScript
+
+	return nil
+}
+
+func (c *Config) checkDatabaseConfig() error {
+	m.Lock()
+	defer m.Unlock()
+
+	if (c.Database == database.Config{}) {
+		c.Database.Driver = database.DBSQLite3
+		c.Database.Database = database.DefaultSQLiteDatabase
+	}
+
+	if !c.Database.Enabled {
+		return nil
+	}
+
+	if !common.StringDataCompare(database.SupportedDrivers, c.Database.Driver) {
+		c.Database.Enabled = false
+		return fmt.Errorf("unsupported database driver %v, database disabled", c.Database.Driver)
+	}
+
+	if c.Database.Driver == database.DBSQLite || c.Database.Driver == database.DBSQLite3 {
+		databaseDir := filepath.Join(common.GetDefaultDataDir(runtime.GOOS), "/database")
+		err := common.CreateDir(databaseDir)
 		if err != nil {
 			return err
 		}
-		log.LogPath = logPath
+		database.DB.DataPath = databaseDir
 	}
+
+	database.DB.Config = &c.Database
+
 	return nil
 }
 
@@ -1160,7 +1266,7 @@ func (c *Config) CheckNTPConfig() {
 	}
 
 	if len(c.NTPClient.Pool) < 1 {
-		log.Warn("NTPClient enabled with no servers configured enabling default pool")
+		log.Warnln(log.ConfigMgr, "NTPClient enabled with no servers configured, enabling default pool.")
 		c.NTPClient.Pool = []string{"pool.ntp.org:123"}
 	}
 }
@@ -1171,33 +1277,37 @@ func (c *Config) DisableNTPCheck(input io.Reader) (string, error) {
 	defer m.Unlock()
 
 	reader := bufio.NewReader(input)
-	log.Warn("Your system time is out of sync this may cause issues with trading")
-	log.Warn("How would you like to show future notifications? (a)lert / (w)arn / (d)isable \n")
+	log.Warnln(log.ConfigMgr, "Your system time is out of sync, this may cause issues with trading")
+	log.Warnln(log.ConfigMgr, "How would you like to show future notifications? (a)lert / (w)arn / (d)isable")
 
-	var answered = false
-	for ok := true; ok; ok = (!answered) {
+	var resp string
+	answered := false
+	for !answered {
 		answer, err := reader.ReadString('\n')
 		if err != nil {
-			return "", err
+			return resp, err
 		}
 
 		answer = strings.TrimRight(answer, "\r\n")
 		switch answer {
 		case "a":
 			c.NTPClient.Level = 0
+			resp = "Time sync has been set to alert"
 			answered = true
-			return "Time sync has been set to alert", nil
 		case "w":
 			c.NTPClient.Level = 1
+			resp = "Time sync has been set to warn only"
 			answered = true
-			return "Time sync has been set to warn only", nil
 		case "d":
 			c.NTPClient.Level = -1
+			resp = "Future notifications for out of time sync has been disabled"
 			answered = true
-			return "Future notications for out time sync have been disabled", nil
+		default:
+			log.Warnln(log.ConfigMgr,
+				"Invalid option selected, please try again (a)lert / (w)arn / (d)isable")
 		}
 	}
-	return "", errors.New("something went wrong NTPCheck should never make it this far")
+	return resp, nil
 }
 
 // CheckConnectionMonitorConfig checks and if zero value assigns default values
@@ -1218,15 +1328,39 @@ func (c *Config) CheckConnectionMonitorConfig() {
 	}
 }
 
+// DefaultFilePath returns the default config file path
+// MacOS/Linux: $HOME/.gocryptotrader/config.json or config.dat
+// Windows: %APPDATA%\GoCryptoTrader\config.json or config.dat
+// Helpful for printing application usage
+func DefaultFilePath() string {
+	f := filepath.Join(common.GetDefaultDataDir(runtime.GOOS), File)
+	if !file.Exists(f) {
+		encFile := filepath.Join(common.GetDefaultDataDir(runtime.GOOS), EncryptedFile)
+		if file.Exists(encFile) {
+			return encFile
+		}
+	}
+	return f
+}
+
 // GetFilePath returns the desired config file or the default config file name
-// based on if the application is being run under test or normal mode.
-func GetFilePath(file string) (string, error) {
-	if file != "" {
-		return file, nil
+// based on if the application is being run under test or normal mode. It will
+// also move/rename the config file under the following conditions:
+// 1) If a config file is found in the executable path directory and no explicit
+//    config path is set, plus no config is found in the GCT data dir, it will
+//    move it to the GCT data dir. If a config already exists in the GCT data
+//    dir, it will warn the user and load the config found in the GCT data dir
+// 2) If a config file in the GCT data dir has the file extension .dat but
+//    contains json data, it will rename to the file to config.json
+// 3) If a config file in the GCT data dir has the file extension .json but
+//    contains encrypted data, it will rename the file to config.dat
+func GetFilePath(configfile string) (string, error) {
+	if configfile != "" {
+		return configfile, nil
 	}
 
 	if flag.Lookup("test.v") != nil && !testBypass {
-		return ConfigTestFile, nil
+		return TestFile, nil
 	}
 
 	exePath, err := common.GetExecutablePath()
@@ -1234,45 +1368,61 @@ func GetFilePath(file string) (string, error) {
 		return "", err
 	}
 
-	oldDir := exePath + common.GetOSPathSlash()
-	oldDirs := []string{oldDir + ConfigFile, oldDir + EncryptedConfigFile}
+	oldDirs := []string{
+		filepath.Join(exePath, File),
+		filepath.Join(exePath, EncryptedFile),
+	}
 
-	newDir := common.GetDefaultDataDir(runtime.GOOS) + common.GetOSPathSlash()
+	newDir := common.GetDefaultDataDir(runtime.GOOS)
 	err = common.CreateDir(newDir)
 	if err != nil {
 		return "", err
 	}
-	newDirs := []string{newDir + ConfigFile, newDir + EncryptedConfigFile}
+	newDirs := []string{
+		filepath.Join(newDir, File),
+		filepath.Join(newDir, EncryptedFile),
+	}
 
-	// First upgrade the old dir config file if it exists to the corresponding new one
+	// First upgrade the old dir config file if it exists to the corresponding
+	// new one
 	for x := range oldDirs {
-		_, err := os.Stat(oldDirs[x])
-		if os.IsNotExist(err) {
+		if !file.Exists(oldDirs[x]) {
 			continue
 		}
+		if file.Exists(newDirs[x]) {
+			log.Warnf(log.ConfigMgr,
+				"config.json file found in root dir and gct dir; cannot overwrite, defaulting to gct dir config.json at %s",
+				newDirs[x])
+			return newDirs[x], nil
+		}
 		if filepath.Ext(oldDirs[x]) == ".json" {
-			err = os.Rename(oldDirs[x], newDirs[0])
+			err = file.Move(oldDirs[x], newDirs[0])
 			if err != nil {
 				return "", err
 			}
-			log.Debugf("Renamed old config file %s to %s", oldDirs[x], newDirs[0])
+			log.Debugf(log.ConfigMgr,
+				"Renamed old config file %s to %s\n",
+				oldDirs[x],
+				newDirs[0])
 		} else {
-			err = os.Rename(oldDirs[x], newDirs[1])
+			err = file.Move(oldDirs[x], newDirs[1])
 			if err != nil {
 				return "", err
 			}
-			log.Debugf("Renamed old config file %s to %s", oldDirs[x], newDirs[1])
+			log.Debugf(log.ConfigMgr,
+				"Renamed old config file %s to %s\n",
+				oldDirs[x],
+				newDirs[1])
 		}
 	}
 
 	// Secondly check to see if the new config file extension is correct or not
 	for x := range newDirs {
-		_, err := os.Stat(newDirs[x])
-		if os.IsNotExist(err) {
+		if !file.Exists(newDirs[x]) {
 			continue
 		}
 
-		data, err := common.ReadFile(newDirs[x])
+		data, err := ioutil.ReadFile(newDirs[x])
 		if err != nil {
 			return "", err
 		}
@@ -1282,7 +1432,7 @@ func GetFilePath(file string) (string, error) {
 				return newDirs[x], nil
 			}
 
-			err = os.Rename(newDirs[x], newDirs[1])
+			err = file.Move(newDirs[x], newDirs[1])
 			if err != nil {
 				return "", err
 			}
@@ -1293,7 +1443,7 @@ func GetFilePath(file string) (string, error) {
 			return newDirs[x], nil
 		}
 
-		err = os.Rename(newDirs[x], newDirs[0])
+		err = file.Move(newDirs[x], newDirs[0])
 		if err != nil {
 			return "", err
 		}
@@ -1301,67 +1451,68 @@ func GetFilePath(file string) (string, error) {
 		return newDirs[0], nil
 	}
 
-	return "", errors.New("config default file path error")
+	return "", fmt.Errorf("config.json file not found in %s, please follow README.md in root dir for config generation",
+		newDir)
 }
 
 // ReadConfig verifies and checks for encryption and verifies the unencrypted
 // file contains JSON.
-func (c *Config) ReadConfig(configPath string) error {
+func (c *Config) ReadConfig(configPath string, dryrun bool) error {
 	defaultPath, err := GetFilePath(configPath)
 	if err != nil {
 		return err
 	}
 
-	file, err := common.ReadFile(defaultPath)
+	fileData, err := ioutil.ReadFile(defaultPath)
 	if err != nil {
 		return err
 	}
 
-	if !ConfirmECS(file) {
-		err = ConfirmConfigJSON(file, &c)
+	if !ConfirmECS(fileData) {
+		err = ConfirmConfigJSON(fileData, &c)
 		if err != nil {
 			return err
 		}
 
-		if c.EncryptConfig == configFileEncryptionDisabled {
+		if c.EncryptConfig == fileEncryptionDisabled {
 			return nil
 		}
 
-		if c.EncryptConfig == configFileEncryptionPrompt {
+		if c.EncryptConfig == fileEncryptionPrompt {
 			m.Lock()
 			IsInitialSetup = true
 			m.Unlock()
-			if c.PromptForConfigEncryption() {
-				c.EncryptConfig = configFileEncryptionEnabled
-				return c.SaveConfig(defaultPath)
+			if c.PromptForConfigEncryption(configPath, dryrun) {
+				c.EncryptConfig = fileEncryptionEnabled
+				return c.SaveConfig(defaultPath, dryrun)
 			}
 		}
 	} else {
 		errCounter := 0
 		for {
-			if errCounter >= configMaxAuthFailres {
+			if errCounter >= maxAuthFailures {
 				return errors.New("failed to decrypt config after 3 attempts")
 			}
 			key, err := PromptForConfigKey(IsInitialSetup)
 			if err != nil {
-				log.Errorf("PromptForConfigKey err: %s", err)
+				log.Errorf(log.ConfigMgr, "PromptForConfigKey err: %s", err)
 				errCounter++
 				continue
 			}
 
 			var f []byte
-			f = append(f, file...)
+			f = append(f, fileData...)
 			data, err := DecryptConfigFile(f, key)
 			if err != nil {
-				log.Errorf("DecryptConfigFile err: %s", err)
+				log.Errorf(log.ConfigMgr, "DecryptConfigFile err: %s", err)
 				errCounter++
 				continue
 			}
 
 			err = ConfirmConfigJSON(data, &c)
 			if err != nil {
-				if errCounter < configMaxAuthFailres {
-					log.Errorf("Invalid password.")
+				if errCounter < maxAuthFailures {
+					log.Error(log.ConfigMgr, "Invalid password.")
 				}
 				errCounter++
 				continue
@@ -1373,7 +1524,11 @@ func (c *Config) ReadConfig(configPath string) error {
 }
 
 // SaveConfig saves your configuration to your desired path
-func (c *Config) SaveConfig(configPath string) error {
+func (c *Config) SaveConfig(configPath string, dryrun bool) error {
+	if dryrun {
+		return nil
+	}
+
 	defaultPath, err := GetFilePath(configPath)
 	if err != nil {
 		return err
@@ -1384,7 +1539,7 @@ func (c *Config) SaveConfig(configPath string) error {
 		return err
 	}
 
-	if c.EncryptConfig == configFileEncryptionEnabled {
+	if c.EncryptConfig == fileEncryptionEnabled {
 		var key []byte
 
 		if IsInitialSetup {
@@ -1400,26 +1555,79 @@ func (c *Config) SaveConfig(configPath string) error {
 			return err
 		}
 	}
-	return common.WriteFile(defaultPath, payload)
+	return file.Write(defaultPath, payload)
+}
+
+// CheckRemoteControlConfig checks to see if the old c.Webserver field is used
+// and migrates the existing settings to the new RemoteControl struct
+func (c *Config) CheckRemoteControlConfig() {
+	m.Lock()
+	defer m.Unlock()
+
+	if c.Webserver != nil {
+		port := common.ExtractPort(c.Webserver.ListenAddress)
+		host := common.ExtractHost(c.Webserver.ListenAddress)
+
+		c.RemoteControl = RemoteControlConfig{
+			Username: c.Webserver.AdminUsername,
+			Password: c.Webserver.AdminPassword,
+
+			DeprecatedRPC: DepcrecatedRPCConfig{
+				Enabled:       c.Webserver.Enabled,
+				ListenAddress: host + ":" + strconv.Itoa(port),
+			},
+		}
+
+		port++
+		c.RemoteControl.WebsocketRPC = WebsocketRPCConfig{
+			Enabled:             c.Webserver.Enabled,
+			ListenAddress:       host + ":" + strconv.Itoa(port),
+			ConnectionLimit:     c.Webserver.WebsocketConnectionLimit,
+			MaxAuthFailures:     c.Webserver.WebsocketMaxAuthFailures,
+			AllowInsecureOrigin: c.Webserver.WebsocketAllowInsecureOrigin,
+		}
+
+		port++
+		gRPCProxyPort := port + 1
+		c.RemoteControl.GRPC = GRPCConfig{
+			Enabled:                c.Webserver.Enabled,
+			ListenAddress:          host + ":" + strconv.Itoa(port),
+			GRPCProxyEnabled:       c.Webserver.Enabled,
+			GRPCProxyListenAddress: host + ":" + strconv.Itoa(gRPCProxyPort),
+		}
+
+		// Then flush the old webserver settings
+		c.Webserver = nil
+	}
 }
 
 // CheckConfig checks all config settings
 func (c *Config) CheckConfig() error {
-	err := c.CheckExchangeConfigValues()
+	err := c.CheckLoggerConfig()
+	if err != nil {
+		log.Errorf(log.ConfigMgr, "Failed to configure logger, some logging features unavailable: %s\n", err)
+	}
+
+	err = c.checkDatabaseConfig()
+	if err != nil {
+		log.Errorf(log.DatabaseMgr, "Failed to configure database: %v", err)
+	}
+
+	err = c.CheckExchangeConfigValues()
 	if err != nil {
 		return fmt.Errorf(ErrCheckingConfigValues, err)
 	}
 
+	err = c.checkGCTScriptConfig()
+	if err != nil {
+		log.Errorf(log.Global, "Failed to configure gctscript, feature has been disabled: %s\n", err)
+	}
+
 	c.CheckConnectionMonitorConfig()
 	c.CheckCommunicationsConfig()
-
-	if c.Webserver.Enabled {
-		err = c.CheckWebserverConfigValues()
-		if err != nil {
-			log.Warnf(ErrCheckingConfigValues, err)
-			c.Webserver.Enabled = false
-		}
-	}
+	c.CheckClientBankAccounts()
+	c.CheckBankAccountConfig()
+	c.CheckRemoteControlConfig()
 
 	err = c.CheckCurrencyConfigValues()
 	if err != nil {
@@ -1427,16 +1635,20 @@ func (c *Config) CheckConfig() error {
 	}
 
 	if c.GlobalHTTPTimeout <= 0 {
-		log.Warnf("Global HTTP Timeout value not set, defaulting to %v.", configDefaultHTTPTimeout)
-		c.GlobalHTTPTimeout = configDefaultHTTPTimeout
+		log.Warnf(log.ConfigMgr, "Global HTTP Timeout value not set, defaulting to %v.\n", defaultHTTPTimeout)
+		c.GlobalHTTPTimeout = defaultHTTPTimeout
 	}
 
-	return c.CheckClientBankAccounts()
+	if c.NTPClient.Level != 0 {
+		c.CheckNTPConfig()
+	}
+
+	return nil
 }
 
 // LoadConfig loads your configuration file into your configuration object
-func (c *Config) LoadConfig(configPath string) error {
-	err := c.ReadConfig(configPath)
+func (c *Config) LoadConfig(configPath string, dryrun bool) error {
+	err := c.ReadConfig(configPath, dryrun)
 	if err != nil {
 		return fmt.Errorf(ErrFailureOpeningConfig, configPath, err)
 	}
@@ -1445,7 +1657,7 @@ func (c *Config) LoadConfig(configPath string) error {
 }
 
 // UpdateConfig updates the config with a supplied config file
-func (c *Config) UpdateConfig(configPath string, newCfg *Config) error {
+func (c *Config) UpdateConfig(configPath string, newCfg *Config, dryrun bool) error {
 	err := newCfg.CheckConfig()
 	if err != nil {
 		return err
@@ -1460,12 +1672,12 @@ func (c *Config) UpdateConfig(configPath string, newCfg *Config) error {
 	c.Webserver = newCfg.Webserver
 	c.Exchanges = newCfg.Exchanges
 
-	err = c.SaveConfig(configPath)
+	err = c.SaveConfig(configPath, dryrun)
 	if err != nil {
 		return err
 	}
 
-	return c.LoadConfig(configPath)
+	return c.LoadConfig(configPath, dryrun)
 }
 
 // GetConfig returns a pointer to a configuration object

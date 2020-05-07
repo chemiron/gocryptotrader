@@ -2,21 +2,23 @@ package coinut
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
 	"net/http"
-	"sync"
-	"time"
+	"strconv"
+	"strings"
 
-	"github.com/gorilla/websocket"
-	"github.com/thrasher-/gocryptotrader/common"
-	"github.com/thrasher-/gocryptotrader/config"
-	"github.com/thrasher-/gocryptotrader/currency"
-	exchange "github.com/thrasher-/gocryptotrader/exchanges"
-	"github.com/thrasher-/gocryptotrader/exchanges/request"
-	"github.com/thrasher-/gocryptotrader/exchanges/ticker"
-	log "github.com/thrasher-/gocryptotrader/logger"
+	"github.com/thrasher-corp/gocryptotrader/common/crypto"
+	"github.com/thrasher-corp/gocryptotrader/currency"
+	exchange "github.com/thrasher-corp/gocryptotrader/exchanges"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/asset"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/order"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/request"
+	"github.com/thrasher-corp/gocryptotrader/exchanges/websocket/wshandler"
+	"github.com/thrasher-corp/gocryptotrader/log"
 )
 
 const (
@@ -38,127 +40,53 @@ const (
 	coinutPositionHistory = "position_history"
 	coinutPositionOpen    = "user_open_positions"
 
-	coinutAuthRate   = 0
-	coinutUnauthRate = 0
-
 	coinutStatusOK = "OK"
+	coinutMaxNonce = 16777215 // See https://github.com/coinut/api/wiki/Websocket-API#nonce
+)
+
+var (
+	errLookupInstrumentID       = errors.New("unable to lookup instrument ID")
+	errLookupInstrumentCurrency = errors.New("unable to lookup instrument")
 )
 
 // COINUT is the overarching type across the coinut package
 type COINUT struct {
 	exchange.Base
-	WebsocketConn *websocket.Conn
-	InstrumentMap map[string]int
-	wsRequestMtx  sync.Mutex
+	WebsocketConn *wshandler.WebsocketConnection
+	instrumentMap instrumentMap
 }
 
-// SetDefaults sets current default values
-func (c *COINUT) SetDefaults() {
-	c.Name = "COINUT"
-	c.Enabled = false
-	c.Verbose = false
-	c.TakerFee = 0.1 // spot
-	c.MakerFee = 0
-	c.Verbose = false
-	c.RESTPollingDelay = 10
-	c.APIWithdrawPermissions = exchange.WithdrawCryptoViaWebsiteOnly |
-		exchange.WithdrawFiatViaWebsiteOnly
-	c.RequestCurrencyPairFormat.Delimiter = ""
-	c.RequestCurrencyPairFormat.Uppercase = true
-	c.ConfigCurrencyPairFormat.Delimiter = ""
-	c.ConfigCurrencyPairFormat.Uppercase = true
-	c.AssetTypes = []string{ticker.Spot}
-	c.SupportsAutoPairUpdating = true
-	c.SupportsRESTTickerBatching = false
-	c.Requester = request.New(c.Name,
-		request.NewRateLimit(time.Second, coinutAuthRate),
-		request.NewRateLimit(time.Second, coinutUnauthRate),
-		common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
-	c.APIUrlDefault = coinutAPIURL
-	c.APIUrl = c.APIUrlDefault
-	c.WebsocketInit()
-	c.Websocket.Functionality = exchange.WebsocketTickerSupported |
-		exchange.WebsocketOrderbookSupported |
-		exchange.WebsocketTradeDataSupported |
-		exchange.WebsocketSubscribeSupported |
-		exchange.WebsocketUnsubscribeSupported |
-		exchange.WebsocketAuthenticatedEndpointsSupported |
-		exchange.WebsocketSubmitOrderSupported |
-		exchange.WebsocketCancelOrderSupported
-}
-
-// Setup sets the current exchange configuration
-func (c *COINUT) Setup(exch *config.ExchangeConfig) {
-	if !exch.Enabled {
-		c.SetEnabled(false)
-	} else {
-		c.Enabled = true
-		c.AuthenticatedAPISupport = exch.AuthenticatedAPISupport
-		c.AuthenticatedWebsocketAPISupport = exch.AuthenticatedWebsocketAPISupport
-		c.SetAPIKeys(exch.APIKey, exch.APISecret, exch.ClientID, false)
-		c.SetHTTPClientTimeout(exch.HTTPTimeout)
-		c.SetHTTPClientUserAgent(exch.HTTPUserAgent)
-		c.RESTPollingDelay = exch.RESTPollingDelay
-		c.Verbose = exch.Verbose
-		c.HTTPDebugging = exch.HTTPDebugging
-		c.Websocket.SetWsStatusAndConnection(exch.Websocket)
-		c.BaseCurrencies = exch.BaseCurrencies
-		c.AvailablePairs = exch.AvailablePairs
-		c.EnabledPairs = exch.EnabledPairs
-		err := c.SetCurrencyPairFormat()
-		if err != nil {
-			log.Fatal(err)
-		}
-		err = c.SetAssetTypes()
-		if err != nil {
-			log.Fatal(err)
-		}
-		err = c.SetAutoPairDefaults()
-		if err != nil {
-			log.Fatal(err)
-		}
-		err = c.SetAPIURL(exch)
-		if err != nil {
-			log.Fatal(err)
-		}
-		err = c.SetClientProxyAddress(exch.ProxyAddress)
-		if err != nil {
-			log.Fatal(err)
-		}
-		err = c.WebsocketSetup(c.WsConnect,
-			c.Subscribe,
-			c.Unsubscribe,
-			exch.Name,
-			exch.Websocket,
-			exch.Verbose,
-			coinutWebsocketURL,
-			exch.WebsocketURL)
-		if err != nil {
-			log.Fatal(err)
-		}
+// SeedInstruments seeds the instrument map
+func (c *COINUT) SeedInstruments() error {
+	i, err := c.GetInstruments()
+	if err != nil {
+		return err
 	}
+
+	for _, y := range i.Instruments {
+		c.instrumentMap.Seed(y[0].Base+y[0].Quote, y[0].InstrumentID)
+	}
+	return nil
 }
 
 // GetInstruments returns instruments
 func (c *COINUT) GetInstruments() (Instruments, error) {
 	var result Instruments
 	params := make(map[string]interface{})
-	params["sec_type"] = "SPOT"
-
+	params["sec_type"] = strings.ToUpper(asset.Spot.String())
 	return result, c.SendHTTPRequest(coinutInstruments, params, false, &result)
 }
 
 // GetInstrumentTicker returns a ticker for a specific instrument
-func (c *COINUT) GetInstrumentTicker(instrumentID int) (Ticker, error) {
+func (c *COINUT) GetInstrumentTicker(instrumentID int64) (Ticker, error) {
 	var result Ticker
 	params := make(map[string]interface{})
 	params["inst_id"] = instrumentID
-
 	return result, c.SendHTTPRequest(coinutTicker, params, false, &result)
 }
 
 // GetInstrumentOrderbook returns the orderbooks for a specific instrument
-func (c *COINUT) GetInstrumentOrderbook(instrumentID, limit int) (Orderbook, error) {
+func (c *COINUT) GetInstrumentOrderbook(instrumentID, limit int64) (Orderbook, error) {
 	var result Orderbook
 	params := make(map[string]interface{})
 	params["inst_id"] = instrumentID
@@ -179,38 +107,27 @@ func (c *COINUT) GetTrades(instrumentID int) (Trades, error) {
 }
 
 // GetUserBalance returns the full user balance
-func (c *COINUT) GetUserBalance() (UserBalance, error) {
-	result := UserBalance{}
-
+func (c *COINUT) GetUserBalance() (*UserBalance, error) {
+	var result *UserBalance
 	return result, c.SendHTTPRequest(coinutBalance, nil, true, &result)
 }
 
 // NewOrder places a new order on the exchange
-func (c *COINUT) NewOrder(instrumentID int, quantity, price float64, buy bool, orderID uint32) (interface{}, error) {
+func (c *COINUT) NewOrder(instrumentID int64, quantity, price float64, buy bool, orderID uint32) (interface{}, error) {
 	var result interface{}
 	params := make(map[string]interface{})
 	params["inst_id"] = instrumentID
 	if price > 0 {
-		params["price"] = fmt.Sprintf("%v", price)
+		params["price"] = strconv.FormatFloat(price, 'f', -1, 64)
 	}
-	params["qty"] = fmt.Sprintf("%v", quantity)
-	params["side"] = "BUY"
+	params["qty"] = strconv.FormatFloat(quantity, 'f', -1, 64)
+	params["side"] = order.Buy.String()
 	if !buy {
-		params["side"] = "SELL"
+		params["side"] = order.Sell.String()
 	}
 	params["client_ord_id"] = orderID
 
-	err := c.SendHTTPRequest(coinutOrder, params, true, &result)
-	if _, ok := result.(OrderRejectResponse); ok {
-		return result.(OrderRejectResponse), err
-	}
-	if _, ok := result.(OrderFilledResponse); ok {
-		return result.(OrderFilledResponse), err
-	}
-	if _, ok := result.(OrdersBase); ok {
-		return result.(OrdersBase), err
-	}
-	return result, err
+	return result, c.SendHTTPRequest(coinutOrder, params, true, &result)
 }
 
 // NewOrders places multiple orders on the exchange
@@ -223,21 +140,20 @@ func (c *COINUT) NewOrders(orders []Order) ([]OrdersBase, error) {
 }
 
 // GetOpenOrders returns a list of open order and relevant information
-func (c *COINUT) GetOpenOrders(instrumentID int) (GetOpenOrdersResponse, error) {
+func (c *COINUT) GetOpenOrders(instrumentID int64) (GetOpenOrdersResponse, error) {
 	var result GetOpenOrdersResponse
 	params := make(map[string]interface{})
 	params["inst_id"] = instrumentID
-
 	return result, c.SendHTTPRequest(coinutOrdersOpen, params, true, &result)
 }
 
 // CancelExistingOrder cancels a specific order and returns if it was actioned
-func (c *COINUT) CancelExistingOrder(instrumentID, orderID int) (bool, error) {
+func (c *COINUT) CancelExistingOrder(instrumentID, orderID int64) (bool, error) {
 	var result GenericResponse
 	params := make(map[string]interface{})
 	type Request struct {
-		InstrumentID int `json:"inst_id"`
-		OrderID      int `json:"order_id"`
+		InstrumentID int64 `json:"inst_id"`
+		OrderID      int64 `json:"order_id"`
 	}
 
 	var entry = Request{
@@ -272,7 +188,7 @@ func (c *COINUT) CancelOrders(orders []CancelOrders) (CancelOrdersResponse, erro
 }
 
 // GetTradeHistory returns trade history for a specific instrument.
-func (c *COINUT) GetTradeHistory(instrumentID, start, limit int) (TradeHistory, error) {
+func (c *COINUT) GetTradeHistory(instrumentID, start, limit int64) (TradeHistory, error) {
 	var result TradeHistory
 	params := make(map[string]interface{})
 	params["inst_id"] = instrumentID
@@ -346,52 +262,53 @@ func (c *COINUT) GetOpenPositions(instrumentID int) ([]OpenPosition, error) {
 
 // SendHTTPRequest sends either an authenticated or unauthenticated HTTP request
 func (c *COINUT) SendHTTPRequest(apiRequest string, params map[string]interface{}, authenticated bool, result interface{}) (err error) {
-	if !c.AuthenticatedAPISupport && authenticated {
+	if !c.API.AuthenticatedSupport && authenticated {
 		return fmt.Errorf(exchange.WarningAuthenticatedRequestWithoutCredentialsSet, c.Name)
 	}
-
-	n := c.Requester.GetNonce(false)
 
 	if params == nil {
 		params = map[string]interface{}{}
 	}
-	params["nonce"] = n
+
+	params["nonce"] = getNonce()
 	params["request"] = apiRequest
 
-	payload, err := common.JSONEncode(params)
+	payload, err := json.Marshal(params)
 	if err != nil {
 		return errors.New("sendHTTPRequest: Unable to JSON request")
 	}
 
 	if c.Verbose {
-		log.Debugf("Request JSON: %s", payload)
+		log.Debugf(log.ExchangeSys, "Request JSON: %s", payload)
 	}
 
 	headers := make(map[string]string)
 	if authenticated {
-		headers["X-USER"] = c.ClientID
-		hmac := common.GetHMAC(common.HashSHA256, payload, []byte(c.APIKey))
-		headers["X-SIGNATURE"] = common.HexEncodeToString(hmac)
+		headers["X-USER"] = c.API.Credentials.ClientID
+		hmac := crypto.GetHMAC(crypto.HashSHA256, payload, []byte(c.API.Credentials.Key))
+		headers["X-SIGNATURE"] = crypto.HexEncodeToString(hmac)
 	}
 	headers["Content-Type"] = "application/json"
 
 	var rawMsg json.RawMessage
-	err = c.SendPayload(http.MethodPost,
-		c.APIUrl,
-		headers,
-		bytes.NewBuffer(payload),
-		&rawMsg,
-		authenticated,
-		true,
-		c.Verbose,
-		c.HTTPDebugging,
-	)
+	err = c.SendPayload(context.Background(), &request.Item{
+		Method:        http.MethodPost,
+		Path:          c.API.Endpoints.URL,
+		Headers:       headers,
+		Body:          bytes.NewBuffer(payload),
+		Result:        &rawMsg,
+		AuthRequest:   authenticated,
+		NonceEnabled:  true,
+		Verbose:       c.Verbose,
+		HTTPDebugging: c.HTTPDebugging,
+		HTTPRecording: c.HTTPRecording,
+	})
 	if err != nil {
 		return err
 	}
 
 	var genResp GenericResponse
-	err = common.JSONDecode(rawMsg, &genResp)
+	err = json.Unmarshal(rawMsg, &genResp)
 	if err != nil {
 		return err
 	}
@@ -401,7 +318,7 @@ func (c *COINUT) SendHTTPRequest(apiRequest string, params map[string]interface{
 			genResp.Status[0])
 	}
 
-	return common.JSONDecode(rawMsg, result)
+	return json.Unmarshal(rawMsg, result)
 }
 
 // GetFee returns an estimate of fee based on type of transaction
@@ -499,4 +416,83 @@ func getInternationalBankDepositFee(c currency.Code, amount float64) float64 {
 	}
 
 	return fee
+}
+
+// IsLoaded returns whether or not the instrument map has been seeded
+func (i *instrumentMap) IsLoaded() bool {
+	i.m.Lock()
+	isLoaded := i.Loaded
+	i.m.Unlock()
+	return isLoaded
+}
+
+// Seed seeds the instrument map
+func (i *instrumentMap) Seed(curr string, id int64) {
+	i.m.Lock()
+	defer i.m.Unlock()
+
+	if !i.Loaded {
+		i.Instruments = make(map[string]int64)
+	}
+
+	// check to see if the instrument already exists
+	_, ok := i.Instruments[curr]
+	if ok {
+		return
+	}
+
+	i.Instruments[curr] = id
+	i.Loaded = true
+}
+
+// LookupInstrument looks up an instrument based on an id
+func (i *instrumentMap) LookupInstrument(id int64) string {
+	i.m.Lock()
+	defer i.m.Unlock()
+
+	if !i.Loaded {
+		return ""
+	}
+
+	for k, v := range i.Instruments {
+		if v == id {
+			return k
+		}
+	}
+	return ""
+}
+
+// LookupID looks up an ID based on a string
+func (i *instrumentMap) LookupID(curr string) int64 {
+	i.m.Lock()
+	defer i.m.Unlock()
+
+	if !i.Loaded {
+		return 0
+	}
+
+	if ic, ok := i.Instruments[curr]; ok {
+		return ic
+	}
+	return 0
+}
+
+// GetInstrumentIDs returns a list of IDs
+func (i *instrumentMap) GetInstrumentIDs() []int64 {
+	i.m.Lock()
+	defer i.m.Unlock()
+
+	if !i.Loaded {
+		return nil
+	}
+
+	var instruments []int64
+	for _, x := range i.Instruments {
+		instruments = append(instruments, x)
+	}
+	return instruments
+}
+
+func getNonce() int64 {
+	return rand.Int63n(coinutMaxNonce-1) + 1
 }
